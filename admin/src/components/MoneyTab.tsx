@@ -9,8 +9,20 @@ import {
   YAxis,
 } from 'recharts';
 import { CHART_TOOLTIP_STYLE, CHART_COLORS } from '../lib/chartTheme';
+import { formatTs } from '../lib/hooks';
 import { DataTable, KpiCard, ProgressBar, Section } from './ui';
 import { PlayerIdentityCell } from './PlayerIdentityCell';
+
+function claimSats(value: unknown): string {
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) ? n.toLocaleString() : '—';
+}
+
+function claimWhen(paid: unknown, published: unknown): string {
+  if (typeof paid === 'number' || typeof paid === 'string') return formatTs(paid);
+  if (typeof published === 'number' || typeof published === 'string') return formatTs(published);
+  return '—';
+}
 
 export function MoneyTab({ data, challenges }: { data: MoneyData; challenges?: ChallengesData }) {
   const capWarn = data.bountyCapPct >= 80;
@@ -88,6 +100,48 @@ export function MoneyTab({ data, challenges }: { data: MoneyData; challenges?: C
             ]}
             rows={challenges.pendingZaps as unknown as Array<Record<string, unknown>>}
             rowKey={(r) => `${r.challengeId}-${r.runId}`}
+          />
+        </Section>
+      ) : null}
+
+      {challenges && challenges.recentClaims.length > 0 ? (
+        <Section
+          title="Who was paid"
+          description="Recent bounty zaps. Pending claims stay in the list above."
+        >
+          <DataTable
+            columns={[
+              {
+                key: 'identity',
+                label: 'Player',
+                sortable: false,
+                render: (r) =>
+                  r.identity ? (
+                    <PlayerIdentityCell identity={r.identity as PlayerIdentity} />
+                  ) : (
+                    String(r.pubkeyPrefix ?? '—')
+                  ),
+              },
+              {
+                key: 'challengeId',
+                label: 'Challenge',
+                render: (r) => String(r.challengeId ?? '—').replace(/_/g, ' '),
+              },
+              {
+                key: 'bountySats',
+                label: 'Sats',
+                render: (r) => claimSats(r.bountySats),
+              },
+              {
+                key: 'zapPaidAt',
+                label: 'Paid',
+                render: (r) => claimWhen(r.zapPaidAt, r.publishedAt),
+              },
+            ]}
+            rows={[...challenges.recentClaims].reverse().slice(0, 8) as unknown as Array<
+              Record<string, unknown>
+            >}
+            rowKey={(r, i) => `${r.runId ?? r.challengeId}-${i}`}
           />
         </Section>
       ) : null}

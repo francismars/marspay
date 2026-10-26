@@ -8,6 +8,7 @@ import {
   fetchHome,
   fetchLive,
   fetchLiveRecent,
+  fetchFunnels,
   fetchModeFunnel,
   fetchMoney,
   fetchOnline,
@@ -130,7 +131,8 @@ export default function App() {
 
   const alerts = usePolling(() => fetchAlerts('24h'), onNow, onNow && poll, 20000);
   const live = usePolling(fetchLive, onNow || onPeople, (onNow || onPeople) && poll, 20000);
-  const online = usePolling(fetchOnline, onNow, onNow && poll, 20000);
+  const needOnline = onNow || (onPlay && mode === 'online');
+  const online = usePolling(fetchOnline, needOnline, needOnline && poll, 20000);
   const recent = usePolling(() => fetchLiveRecent(24), onPeople, onPeople && poll, 30000);
   const cohorts = usePolling(
     () => fetchCohorts('7d'),
@@ -146,6 +148,8 @@ export default function App() {
     [mode, playWindow]
   );
   const funnel = usePolling(funnelFetcher, onPlay, onPlay && poll, 20000);
+  const funnelsFetcher = useCallback(() => fetchFunnels(playWindow), [playWindow]);
+  const funnels = usePolling(funnelsFetcher, onPlay, onPlay && poll, 30000);
   const challenges = usePolling(
     fetchChallenges,
     (onPlay && mode === 'challenge') || onMoney,
@@ -174,7 +178,10 @@ export default function App() {
   const activity = usePolling(activityFetcher, onLog, onLog && poll, 15000);
 
   useEffect(() => {
-    if (onPlay) void home.refresh();
+    if (onPlay) {
+      void home.refresh();
+      void funnels.refresh();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playWindow, onPlay]);
 
@@ -371,6 +378,8 @@ export default function App() {
                 quickmatch={quickmatch.data ?? undefined}
                 p2p={p2p.data ?? undefined}
                 replays={replays.data ?? undefined}
+                online={online.data}
+                funnels={funnels.data}
                 cohorts={cohorts.data}
                 onStepClick={(event) => goToLog({ event, since: playWindow === '7d' ? '7d' : '24h' })}
               />

@@ -20,11 +20,13 @@ function doing(ctx: LiveData['sessions'][0]['context']): string {
   return 'Connected, not in a match';
 }
 
-function seatLine(seat: OnlineRoomLive['seats'][0]): string {
-  if (!seat.sessionID && seat.status === 'open') return 'Open seat';
+function seatLine(seat: OnlineRoomLive['seats'][0]): { text: string; slow: boolean } {
+  if (!seat.sessionID && seat.status === 'open') return { text: 'Open seat', slow: false };
   const name = seat.name || 'Player';
   const ready = seat.ready ? 'ready' : seat.status;
-  return `${name} · ${ready}`;
+  const slow = typeof seat.pingMs === 'number' && seat.pingMs >= 200;
+  const ping = typeof seat.pingMs === 'number' ? ` · ${seat.pingMs} ms` : '';
+  return { text: `${name} · ${ready}${ping}`, slow };
 }
 
 export function NowView({
@@ -83,7 +85,7 @@ export function NowView({
 
       <Section
         title="Live matches"
-        description="ONLINE rooms that are still open. Finished matches stay in the log."
+        description="ONLINE rooms that are still open. A ping of 200 ms or more is marked. Finished matches are under Play, ONLINE."
       >
         {rooms.length === 0 ? (
           <p className="text-sm text-zinc-500">No live matches.</p>
@@ -101,18 +103,22 @@ export function NowView({
                   {formatAge(room.ageMs)} ago
                 </p>
                 <ul className="mt-3 space-y-1 text-sm text-zinc-300">
-                  {room.seats.map((seat) => (
-                    <li key={seat.role}>
-                      <button
-                        type="button"
-                        className="text-left hover:text-accent disabled:hover:text-zinc-300"
-                        disabled={!seat.sessionID}
-                        onClick={() => seat.sessionID && onSelectSession(seat.sessionID)}
-                      >
-                        <span className="text-zinc-500">{seat.role.toUpperCase()}</span> {seatLine(seat)}
-                      </button>
-                    </li>
-                  ))}
+                  {room.seats.map((seat) => {
+                    const line = seatLine(seat);
+                    return (
+                      <li key={seat.role}>
+                        <button
+                          type="button"
+                          className="text-left hover:text-accent disabled:hover:text-zinc-300"
+                          disabled={!seat.sessionID}
+                          onClick={() => seat.sessionID && onSelectSession(seat.sessionID)}
+                        >
+                          <span className="text-zinc-500">{seat.role.toUpperCase()}</span>{' '}
+                          <span className={line.slow ? 'text-amber-300' : undefined}>{line.text}</span>
+                        </button>
+                      </li>
+                    );
+                  })}
                 </ul>
               </article>
             ))}

@@ -270,10 +270,30 @@ export type ChallengesData = {
   }>;
 };
 
+export type OnlineMatchResult = {
+  winnerName: string;
+  p1Name: string;
+  p2Name: string;
+  p1Score: number;
+  p2Score: number;
+  netPrize: number;
+};
+
+export type OnlineHistoryRow = {
+  roomCode: string;
+  phase: string;
+  buyin: number;
+  matchRound?: number;
+  finishedAt?: number;
+  archiveKind?: 'match' | 'session';
+  result?: OnlineMatchResult;
+  replay?: { available?: boolean; durationMs?: number };
+};
+
 export type OnlineData = {
   fetchedAt: string;
   live: OnlineRoomLive[];
-  history: Array<Record<string, unknown>>;
+  history: OnlineHistoryRow[];
 };
 
 export type ActivityData = {

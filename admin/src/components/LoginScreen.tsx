@@ -33,7 +33,7 @@ export function LoginScreen({ onSuccess }: { onSuccess: () => void }) {
           <input
             type="password"
             autoComplete="current-password"
-            className="mt-1 w-full rounded-lg border border-surface-border bg-surface px-3 py-2 text-zinc-100 outline-none focus:border-accent"
+            className="mt-1 w-full rounded-lg border border-surface-border bg-surface px-3 py-2 text-zinc-100 outline-hidden focus:border-accent"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
           />

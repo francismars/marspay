@@ -142,7 +142,7 @@ export function DataTable({
           setPage(0);
         }}
         placeholder={filterPlaceholder}
-        className="w-full max-w-xs rounded border border-surface-border bg-surface-raised px-2 py-1.5 text-sm text-zinc-200 focus:border-accent focus:outline-none"
+        className="w-full max-w-xs rounded border border-surface-border bg-surface-raised px-2 py-1.5 text-sm text-zinc-200 focus:border-accent focus:outline-hidden"
       />
       <div className="panel overflow-x-auto rounded-lg">
         <table className="w-full min-w-[480px] text-left text-sm">

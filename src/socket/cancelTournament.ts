@@ -57,7 +57,7 @@ export async function cancelTournament(socket: Socket) {
     return;
   }
   const LNURLPs = getLNURLPsFromID(sessionID);
-  let amount = 0;
+  let amount: number;
   if (tournamentInfo.mode === GameMode.TOURNAMENTNOSTR) {
     const kind1 = getKind1sfromSessionID(sessionID)?.slice(-1)[0];
     amount =

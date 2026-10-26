@@ -205,7 +205,12 @@ router.get('/api/live/recent', requireDashboardAuth, (req, res) => {
 });
 
 router.get('/api/live/:sessionID', requireDashboardAuth, (req, res) => {
-  const detail = buildLiveSessionDetail(req.params.sessionID);
+  const sessionID = req.params.sessionID;
+  if (typeof sessionID !== 'string') {
+    res.status(400).json({ error: 'invalid_session' });
+    return;
+  }
+  const detail = buildLiveSessionDetail(sessionID);
   if (!detail) {
     res.status(404).json({ error: 'session_not_connected' });
     return;

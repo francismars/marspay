@@ -253,7 +253,6 @@ function buildAcquisitionSnapshot(hours: number) {
   });
   const referrers: Record<string, number> = {};
   const platforms: Record<string, number> = {};
-  let sessionsWithContext = 0;
   const contextSessions = new Set<string>();
   for (const e of contextEvents) {
     if (e.sessionID) contextSessions.add(e.sessionID);
@@ -264,7 +263,7 @@ function buildAcquisitionSnapshot(hours: number) {
       platforms[platform] = (platforms[platform] ?? 0) + 1;
     }
   }
-  sessionsWithContext = contextSessions.size;
+  const sessionsWithContext = contextSessions.size;
 
   const menuEvents = scanEvents(10_000, { sinceTs, events: ['client.menu.selected'] });
   const menuChoices: Record<string, number> = {};

@@ -27,7 +27,7 @@ function emptyProfile(pubkey: string): AppNostrProfile {
 }
 
 function profileFromKind0(pubkey: string, contentRaw: string): AppNostrProfile {
-  let content: Record<string, unknown> = {};
+  let content: Record<string, unknown>;
   try {
     content = JSON.parse(contentRaw) as Record<string, unknown>;
   } catch {

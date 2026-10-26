@@ -7,6 +7,6 @@ export function snapshotFromNdkEvent(ndkEvent: NDKEvent): Kind1PublishedSnapshot
     content: ndkEvent.content,
     tags: ndkEvent.tags.map((tag) => [...tag]),
     pubkey: ndkEvent.pubkey,
-    created_at: ndkEvent.created_at,
+    created_at: ndkEvent.created_at ?? Math.floor(Date.now() / 1000),
   };
 }

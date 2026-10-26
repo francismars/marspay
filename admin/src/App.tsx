@@ -2,9 +2,9 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   checkAuth,
   fetchActivity,
+  fetchAlerts,
   fetchChallenges,
   fetchCohorts,
-  fetchFunnels,
   fetchHome,
   fetchLive,
   fetchLiveRecent,
@@ -19,59 +19,58 @@ import {
   type DashboardAlert,
 } from './lib/api';
 import { usePolling } from './lib/hooks';
+import { PLAY_MODES, type PlayMode } from './lib/labels';
 import { LoginScreen } from './components/LoginScreen';
-import { HomeTab } from './components/HomeTab';
-import { PlayersTab } from './components/PlayersTab';
-import { ModesTab, type ModeId } from './components/ModesTab';
+import { NowView } from './components/NowView';
+import { PlayView } from './components/PlayView';
+import { PeopleView } from './components/PeopleView';
 import { MoneyTab } from './components/MoneyTab';
-import { DebugTab } from './components/DebugTab';
+import { ActivityTab } from './components/ActivityTab';
 import { ChainDuelHeader } from './components/ChainDuelHeader';
 import { ErrorBanner, LoadingState } from './components/ui';
 
-type Tab = 'home' | 'players' | 'modes' | 'money' | 'debug';
+type Tab = 'now' | 'play' | 'people' | 'money' | 'log';
 
 const TABS: Array<{ id: Tab; label: string }> = [
-  { id: 'home', label: 'Home' },
-  { id: 'players', label: 'Players' },
-  { id: 'modes', label: 'Modes' },
+  { id: 'now', label: 'Now' },
+  { id: 'play', label: 'Play' },
+  { id: 'people', label: 'People' },
   { id: 'money', label: 'Money' },
-  { id: 'debug', label: 'Debug' },
+  { id: 'log', label: 'Log' },
 ];
 
 const LEGACY_TAB_MAP: Record<string, Tab> = {
-  overview: 'home',
-  visitors: 'home',
-  funnels: 'debug',
-  challenge: 'modes',
-  quickmatch: 'modes',
-  p2p: 'modes',
-  online: 'modes',
-  activity: 'debug',
-  live: 'players',
-  explorer: 'players',
-};
-
-const LEGACY_MODE_MAP: Record<string, ModeId> = {
-  quickmatch: 'quickmatch',
-  challenge: 'challenge',
-  p2p: 'p2p',
-  online: 'online',
+  home: 'now',
+  overview: 'now',
+  visitors: 'now',
+  players: 'people',
+  live: 'people',
+  explorer: 'people',
+  modes: 'play',
+  funnels: 'play',
+  challenge: 'play',
+  quickmatch: 'play',
+  p2p: 'play',
+  online: 'play',
+  debug: 'log',
+  activity: 'log',
 };
 
 function parseTabFromUrl(): Tab {
-  const params = new URLSearchParams(window.location.search);
-  const raw = params.get('tab');
+  const raw = new URLSearchParams(window.location.search).get('tab');
   if (raw && TABS.some((t) => t.id === raw)) return raw as Tab;
   if (raw && LEGACY_TAB_MAP[raw]) return LEGACY_TAB_MAP[raw];
-  return 'home';
+  return 'now';
 }
 
-function parseModeFromUrl(): ModeId {
-  const params = new URLSearchParams(window.location.search);
-  const mode = params.get('mode');
-  if (mode && mode in LEGACY_MODE_MAP) return LEGACY_MODE_MAP[mode]!;
-  if (mode === 'nostr') return 'nostr';
+function parseModeFromUrl(): PlayMode {
+  const mode = new URLSearchParams(window.location.search).get('mode');
+  if (mode && PLAY_MODES.includes(mode as PlayMode)) return mode as PlayMode;
   return 'quickmatch';
+}
+
+function parseWindowFromUrl(): '24h' | '7d' {
+  return new URLSearchParams(window.location.search).get('window') === '7d' ? '7d' : '24h';
 }
 
 function parseActivityFiltersFromUrl(): ActivityFilters {
@@ -83,21 +82,16 @@ function parseActivityFiltersFromUrl(): ActivityFilters {
     sessionID: params.get('sessionID') ?? undefined,
     pubkeyPrefix: params.get('pubkeyPrefix') ?? undefined,
     roomCode: params.get('roomCode') ?? undefined,
-    since:
-      since === '1h' || since === '24h' || since === '7d' ? since : undefined,
+    since: since === '1h' || since === '24h' || since === '7d' ? since : undefined,
   };
 }
 
-function syncUrl(
-  tab: Tab,
-  extras?: Record<string, string | undefined>
-) {
+function syncUrl(tab: Tab, extras?: Record<string, string | undefined>) {
   const params = new URLSearchParams();
   params.set('tab', tab);
   if (extras) {
     for (const [k, v] of Object.entries(extras)) {
       if (v) params.set(k, v);
-      else params.delete(k);
     }
   }
   window.history.replaceState(null, '', `?${params.toString()}`);
@@ -106,226 +100,149 @@ function syncUrl(
 export default function App() {
   const [authed, setAuthed] = useState<boolean | null>(null);
   const [tab, setTab] = useState<Tab>(() => parseTabFromUrl());
-  const [mode, setMode] = useState<ModeId>(() => parseModeFromUrl());
-  const [debugSection, setDebugSection] = useState<'activity' | 'funnels'>('activity');
+  const [mode, setMode] = useState<PlayMode>(() => parseModeFromUrl());
+  const [playWindow, setPlayWindow] = useState<'24h' | '7d'>(() => parseWindowFromUrl());
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [funnelWindow, setFunnelWindow] = useState<'lifetime' | '24h' | '7d'>('24h');
   const [activityFilters, setActivityFilters] = useState<ActivityFilters>(() =>
     parseActivityFiltersFromUrl()
   );
   const [selectedSession, setSelectedSession] = useState<string | null>(() => {
-    const params = new URLSearchParams(window.location.search);
-    return params.get('session');
+    return new URLSearchParams(window.location.search).get('session');
   });
-  const [explorerQuery, setExplorerQuery] = useState<string | undefined>();
-  const [explorerKind, setExplorerKind] = useState<'sessionID' | 'pubkey'>('sessionID');
+  const [explorerQuery, setExplorerQuery] = useState<string | undefined>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('session') ?? params.get('pubkey') ?? undefined;
+  });
+  const [explorerKind, setExplorerKind] = useState<'sessionID' | 'pubkey'>(() =>
+    new URLSearchParams(window.location.search).get('pubkey') ? 'pubkey' : 'sessionID'
+  );
 
   useEffect(() => {
     void checkAuth().then(setAuthed);
   }, []);
 
-  const setTabWithUrl = useCallback(
-    (next: Tab, extras?: Record<string, string | undefined>) => {
-      setTab(next);
-      if (next === 'debug') {
-        syncUrl(next, {
-          section: debugSection,
-          event: activityFilters.event,
-          outcome: activityFilters.outcome,
-          since: activityFilters.since,
-          sessionID: activityFilters.sessionID,
-          pubkeyPrefix: activityFilters.pubkeyPrefix,
-          roomCode: activityFilters.roomCode,
-          ...extras,
-        });
-      } else if (next === 'players') {
-        syncUrl(next, { session: selectedSession ?? undefined, ...extras });
-      } else if (next === 'modes') {
-        syncUrl(next, { mode, ...extras });
-      } else {
-        syncUrl(next, extras);
-      }
-    },
-    [activityFilters, debugSection, mode, selectedSession]
-  );
-
-  const poll = autoRefresh;
-  const onHome = authed === true && tab === 'home';
-  const onPlayers = authed === true && tab === 'players';
-  const onModes = authed === true && tab === 'modes';
+  const poll = autoRefresh && authed === true;
+  const onNow = authed === true && tab === 'now';
+  const onPlay = authed === true && tab === 'play';
+  const onPeople = authed === true && tab === 'people';
   const onMoney = authed === true && tab === 'money';
-  const onDebug = authed === true && tab === 'debug';
+  const onLog = authed === true && tab === 'log';
 
-  const home = usePolling(fetchHome, onHome, onHome && poll, 20000);
-  const live = usePolling(fetchLive, onPlayers, onPlayers && poll, 20000);
-  const liveRecent = usePolling(
-    () => fetchLiveRecent(24),
-    onPlayers,
-    onPlayers && poll,
-    30000
-  );
+  const alerts = usePolling(() => fetchAlerts('24h'), onNow, onNow && poll, 20000);
+  const live = usePolling(fetchLive, onNow || onPeople, (onNow || onPeople) && poll, 20000);
+  const online = usePolling(fetchOnline, onNow, onNow && poll, 20000);
+  const recent = usePolling(() => fetchLiveRecent(24), onPeople, onPeople && poll, 30000);
   const cohorts = usePolling(
     () => fetchCohorts('7d'),
-    onPlayers,
-    onPlayers && poll,
+    onPlay || onPeople,
+    (onPlay || onPeople) && poll,
     60000
   );
-  const modeFunnelFetcher = useCallback(
-    () => fetchModeFunnel(mode, '24h'),
-    [mode]
+
+  const homeFetcher = useCallback(() => fetchHome(playWindow), [playWindow]);
+  const home = usePolling(homeFetcher, onPlay, onPlay && poll, 20000);
+  const funnelFetcher = useCallback(
+    () => fetchModeFunnel(mode, playWindow),
+    [mode, playWindow]
   );
-  const modeFunnel = usePolling(
-    modeFunnelFetcher,
-    onModes,
-    onModes && poll,
+  const funnel = usePolling(funnelFetcher, onPlay, onPlay && poll, 20000);
+  const challenges = usePolling(
+    fetchChallenges,
+    (onPlay && mode === 'challenge') || onMoney,
+    ((onPlay && mode === 'challenge') || onMoney) && poll,
     20000
   );
   const quickmatch = usePolling(
     fetchQuickMatch,
-    onModes && mode === 'quickmatch',
-    onModes && mode === 'quickmatch' && poll,
+    onPlay && mode === 'quickmatch',
+    onPlay && mode === 'quickmatch' && poll,
     20000
   );
-  const challenges = usePolling(
-    fetchChallenges,
-    (onModes && mode === 'challenge') || onMoney,
-    ((onModes && mode === 'challenge') || onMoney) && poll,
-    20000
-  );
-  const p2p = usePolling(
-    fetchP2p,
-    onModes && mode === 'p2p',
-    onModes && mode === 'p2p' && poll,
-    20000
-  );
-  const online = usePolling(
-    fetchOnline,
-    onModes && mode === 'online',
-    onModes && mode === 'online' && poll,
-    20000
-  );
+  const p2p = usePolling(fetchP2p, onPlay && mode === 'p2p', onPlay && mode === 'p2p' && poll, 20000);
   const replays = usePolling(
     fetchReplays,
-    onModes && mode === 'online',
-    onModes && mode === 'online' && poll,
+    onPlay && mode === 'online',
+    onPlay && mode === 'online' && poll,
     30000
   );
   const money = usePolling(fetchMoney, onMoney, onMoney && poll, 20000);
-
-  const funnelsFetcher = useCallback(() => fetchFunnels(funnelWindow), [funnelWindow]);
-  const funnels = usePolling(
-    funnelsFetcher,
-    onDebug && debugSection === 'funnels',
-    onDebug && debugSection === 'funnels' && poll,
-    20000
-  );
 
   const activityFetcher = useCallback(
     () => fetchActivity({ limit: 100, ...activityFilters }),
     [activityFilters]
   );
-  const activity = usePolling(
-    activityFetcher,
-    onDebug && debugSection === 'activity',
-    onDebug && debugSection === 'activity' && poll,
-    15000
-  );
+  const activity = usePolling(activityFetcher, onLog, onLog && poll, 15000);
 
   useEffect(() => {
-    if (tab === 'debug' && authed) void activity.refresh();
+    if (onPlay) void home.refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activityFilters, tab, authed, debugSection]);
+  }, [playWindow, onPlay]);
 
   useEffect(() => {
-    if (tab === 'modes' && authed) void modeFunnel.refresh();
+    if (onPlay) void funnel.refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, tab, authed]);
+  }, [mode, playWindow, onPlay]);
 
   useEffect(() => {
-    if (tab === 'debug' && debugSection === 'funnels' && authed) void funnels.refresh();
+    if (onLog) void activity.refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [funnelWindow, tab, authed, debugSection]);
+  }, [activityFilters, onLog]);
 
-  const handleActivityFilterChange = useCallback(
-    (filters: ActivityFilters) => {
-      setActivityFilters(filters);
-      if (tab === 'debug') {
-        syncUrl('debug', {
-          section: 'activity',
-          event: filters.event,
-          outcome: filters.outcome,
-          since: filters.since,
-          sessionID: filters.sessionID,
-          pubkeyPrefix: filters.pubkeyPrefix,
-          roomCode: filters.roomCode,
-        });
-      }
-    },
-    [tab]
-  );
-
-  const goToActivity = useCallback(
-    (partial: Partial<ActivityFilters>) => {
-      const filters: ActivityFilters = { ...activityFilters, ...partial };
-      setActivityFilters(filters);
-      setDebugSection('activity');
-      setTab('debug');
-      syncUrl('debug', {
-        section: 'activity',
-        event: filters.event,
-        outcome: filters.outcome,
-        since: filters.since ?? '24h',
-        sessionID: filters.sessionID,
-        pubkeyPrefix: filters.pubkeyPrefix,
-        roomCode: filters.roomCode,
-      });
-    },
-    [activityFilters]
-  );
-
-  const goToPlayers = useCallback((sessionID?: string) => {
-    if (sessionID) setSelectedSession(sessionID);
-    setTab('players');
-    syncUrl('players', { session: sessionID });
+  const goToLog = useCallback((partial: Partial<ActivityFilters>) => {
+    const filters: ActivityFilters = { since: '24h', ...partial };
+    setActivityFilters(filters);
+    setTab('log');
+    syncUrl('log', {
+      event: filters.event,
+      outcome: filters.outcome,
+      since: filters.since,
+      sessionID: filters.sessionID,
+      pubkeyPrefix: filters.pubkeyPrefix,
+      roomCode: filters.roomCode,
+    });
   }, []);
 
-  const goToExplorer = useCallback((query: string, kind: 'sessionID' | 'pubkey' = 'sessionID') => {
-    setExplorerQuery(query);
-    setExplorerKind(kind);
-    setTab('players');
-    syncUrl('players', { session: undefined });
-  }, []);
+  const goToPlay = useCallback((nextMode: PlayMode) => {
+    setMode(nextMode);
+    setTab('play');
+    syncUrl('play', { mode: nextMode, window: playWindow });
+  }, [playWindow]);
 
-  const goToMode = useCallback((nextMode: string) => {
-    const m = (LEGACY_MODE_MAP[nextMode] ?? nextMode) as ModeId;
-    setMode(m);
-    setTab('modes');
-    syncUrl('modes', { mode: m });
+  const goToPeople = useCallback((query?: string, kind: 'sessionID' | 'pubkey' = 'sessionID') => {
+    if (query) {
+      setExplorerQuery(query);
+      setExplorerKind(kind);
+    }
+    setTab('people');
+    syncUrl('people', query ? { [kind === 'sessionID' ? 'session' : 'pubkey']: query } : undefined);
   }, []);
 
   const handleAlertClick = useCallback(
     (alert: DashboardAlert) => {
       const d = alert.drillDown;
       if (!d) return;
-      if (d.tab === 'money') setTabWithUrl('money');
-      else if (d.tab === 'modes' && d.mode) goToMode(d.mode);
-      else if (d.tab === 'debug' && d.event) goToActivity({ event: d.event, since: '24h' });
+      if (d.tab === 'money') {
+        setTab('money');
+        syncUrl('money');
+      } else if ((d.tab === 'modes' || d.tab === 'play') && d.mode && PLAY_MODES.includes(d.mode as PlayMode)) {
+        goToPlay(d.mode as PlayMode);
+      } else if ((d.tab === 'debug' || d.tab === 'log') && d.event) {
+        goToLog({ event: d.event, since: '24h' });
+      }
     },
-    [goToActivity, goToMode, setTabWithUrl]
+    [goToLog, goToPlay]
   );
 
   const activePoll =
-    tab === 'home'
-      ? home
-      : tab === 'players'
-        ? live
-        : tab === 'modes'
-          ? modeFunnel
+    tab === 'now'
+      ? live
+      : tab === 'play'
+        ? home
+        : tab === 'people'
+          ? recent
           : tab === 'money'
             ? money
-            : debugSection === 'activity'
-              ? activity
-              : funnels;
+            : activity;
 
   const handleLogout = async () => {
     await logout();
@@ -344,13 +261,18 @@ export default function App() {
     return <LoginScreen onSuccess={() => setAuthed(true)} />;
   }
 
+  const showBody =
+    (tab === 'now' && live.data) ||
+    (tab === 'play' && home.data) ||
+    (tab === 'people' && (recent.data || live.data)) ||
+    (tab === 'money' && money.data) ||
+    (tab === 'log' && activity.data);
+
   return (
     <div className="min-h-screen">
       <header className="sticky top-0 z-10 border-b border-surface-border bg-surface">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-4 py-3">
-          <div>
-            <ChainDuelHeader subtitle="Telemetry" />
-          </div>
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-4 py-3">
+          <ChainDuelHeader subtitle="Ops" />
           <div className="flex flex-wrap items-center gap-3 text-sm">
             <label className="flex items-center gap-2 text-zinc-400">
               <input
@@ -359,14 +281,11 @@ export default function App() {
                 onChange={(e) => setAutoRefresh(e.target.checked)}
                 className="rounded border-surface-border"
               />
-              Live refresh
+              Live
             </label>
-            <span className="flex items-center gap-1.5 text-zinc-500">
-              <span
-                className={`h-2 w-2 rounded-full ${autoRefresh ? 'bg-emerald-400' : 'bg-zinc-600'}`}
-              />
+            <span className="text-zinc-500">
               {activePoll.data?.fetchedAt
-                ? `Updated ${new Date(activePoll.data.fetchedAt).toLocaleTimeString()}`
+                ? new Date(activePoll.data.fetchedAt).toLocaleTimeString()
                 : '—'}
             </span>
             <button
@@ -385,12 +304,23 @@ export default function App() {
             </button>
           </div>
         </div>
-        <nav className="mx-auto flex max-w-7xl gap-6 overflow-x-auto px-4">
+        <nav className="mx-auto flex max-w-6xl gap-6 overflow-x-auto px-4">
           {TABS.map((t) => (
             <button
               key={t.id}
               type="button"
-              onClick={() => setTabWithUrl(t.id)}
+              onClick={() => {
+                setTab(t.id);
+                if (t.id === 'play') syncUrl('play', { mode, window: playWindow });
+                else if (t.id === 'log') {
+                  syncUrl('log', {
+                    event: activityFilters.event,
+                    since: activityFilters.since,
+                    sessionID: activityFilters.sessionID,
+                  });
+                } else if (t.id === 'now') syncUrl('now', { session: selectedSession ?? undefined });
+                else syncUrl(t.id);
+              }}
               className={`whitespace-nowrap border-b-2 px-1 py-2.5 text-sm font-medium transition ${
                 tab === t.id
                   ? 'border-accent text-accent'
@@ -403,68 +333,85 @@ export default function App() {
         </nav>
       </header>
 
-      <main className="mx-auto max-w-7xl px-4 py-6">
+      <main className="mx-auto max-w-6xl px-4 py-6">
         {activePoll.error ? <ErrorBanner message={activePoll.error} /> : null}
         {activePoll.loading && !activePoll.data ? (
           <LoadingState />
-        ) : (
+        ) : showBody ? (
           <>
-            {tab === 'home' && home.data ? (
-              <HomeTab
-                data={home.data}
-                onModeClick={goToMode}
-                onAlertClick={handleAlertClick}
-              />
-            ) : null}
-            {tab === 'players' && live.data ? (
-              <PlayersTab
+            {tab === 'now' && live.data ? (
+              <NowView
                 live={live.data}
-                recent={liveRecent.data}
-                cohorts={cohorts.data}
+                online={online.data}
+                alerts={alerts.data?.alerts ?? []}
                 selectedSession={selectedSession}
-                explorerQuery={explorerQuery}
-                explorerKind={explorerKind}
-                onSelectSession={setSelectedSession}
-                onFilterActivity={(f) => goToActivity(f)}
-                onViewActivity={(sid) => goToActivity({ sessionID: sid })}
-                onExplorePlayer={(pk) => goToExplorer(pk, 'pubkey')}
+                onSelectSession={(sessionID) => {
+                  setSelectedSession(sessionID);
+                  syncUrl('now', { session: sessionID ?? undefined });
+                }}
+                onAlertClick={handleAlertClick}
+                onViewActivity={(sessionID) => goToLog({ sessionID, since: '24h' })}
               />
             ) : null}
-            {tab === 'modes' ? (
-              <ModesTab
-                mode={mode}
-                onModeChange={(m) => {
-                  setMode(m);
-                  syncUrl('modes', { mode: m });
+            {tab === 'play' && home.data ? (
+              <PlayView
+                home={home.data}
+                window={playWindow}
+                onWindowChange={(next) => {
+                  setPlayWindow(next);
+                  syncUrl('play', { mode, window: next });
                 }}
-                funnel={modeFunnel.data ?? null}
-                quickmatch={quickmatch.data ?? undefined}
+                mode={mode}
+                onModeChange={(next) => {
+                  setMode(next);
+                  syncUrl('play', { mode: next, window: playWindow });
+                }}
+                funnel={funnel.data}
                 challenges={challenges.data ?? undefined}
+                quickmatch={quickmatch.data ?? undefined}
                 p2p={p2p.data ?? undefined}
-                online={online.data ?? undefined}
                 replays={replays.data ?? undefined}
-                onStepClick={(event) => goToActivity({ event, since: '24h' })}
-                onSeatClick={goToPlayers}
+                cohorts={cohorts.data}
+                onStepClick={(event) => goToLog({ event, since: playWindow === '7d' ? '7d' : '24h' })}
+              />
+            ) : null}
+            {tab === 'people' ? (
+              <PeopleView
+                live={live.data}
+                recent={recent.data}
+                cohorts={cohorts.data}
+                initialQuery={explorerQuery}
+                initialKind={explorerKind}
               />
             ) : null}
             {tab === 'money' && money.data ? (
               <MoneyTab data={money.data} challenges={challenges.data ?? undefined} />
             ) : null}
-            {tab === 'debug' ? (
-              <DebugTab
-                section={debugSection}
-                onSectionChange={setDebugSection}
-                activity={activity.data ?? { fetchedAt: '', events: [] }}
-                activityFilters={activityFilters}
-                onActivityFilterChange={handleActivityFilterChange}
-                onSessionClick={goToPlayers}
-                funnels={funnels.data ?? { fetchedAt: '', window: '24h', challenge: { steps: {}, topRejectReasons: {} }, online: { steps: {}, topRejectReasons: {} }, client: { steps: {}, uiErrors: [] } }}
-                funnelWindow={funnelWindow}
-                onFunnelWindowChange={setFunnelWindow}
-              />
+            {tab === 'log' && activity.data ? (
+              <div className="space-y-4">
+                <p className="max-w-2xl text-sm text-zinc-400">
+                  The raw sequence. Open it after a leak or a player path points at one event.
+                </p>
+                <ActivityTab
+                  data={activity.data}
+                  filters={activityFilters}
+                  onFilterChange={(filters) => {
+                    setActivityFilters(filters);
+                    syncUrl('log', {
+                      event: filters.event,
+                      outcome: filters.outcome,
+                      since: filters.since,
+                      sessionID: filters.sessionID,
+                      pubkeyPrefix: filters.pubkeyPrefix,
+                      roomCode: filters.roomCode,
+                    });
+                  }}
+                  onSessionClick={(sessionID) => goToPeople(sessionID, 'sessionID')}
+                />
+              </div>
             ) : null}
           </>
-        )}
+        ) : null}
       </main>
     </div>
   );

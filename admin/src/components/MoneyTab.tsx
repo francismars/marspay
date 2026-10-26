@@ -17,20 +17,19 @@ export function MoneyTab({ data, challenges }: { data: MoneyData; challenges?: C
 
   return (
     <div className="space-y-8">
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <KpiCard
-          label="Bounty paid today"
-          value={`${data.bountySpentTodaySats.toLocaleString()} sats`}
-          hint={`${data.bountyRemainingSats.toLocaleString()} remaining`}
-          warn={capWarn}
-          window="today"
-        />
-        <KpiCard label="Cap used" value={`${data.bountyCapPct}%`} warn={capWarn} />
-        <KpiCard label="Pending zaps" value={data.pendingZapClaims} />
-        <KpiCard label="P2P deposits" value={data.p2pDeposits} accent />
-      </div>
+      <p className="max-w-2xl text-sm text-zinc-400">
+        Challenge bounties are the daily budget. Deposits and payouts below are lifetime counters,
+        so they are not comparable to today’s spend.
+      </p>
 
-      <Section title="Bounty cap">
+      <Section
+        title="Bounty budget today"
+        description={
+          data.pendingZapClaims > 0
+            ? `${data.pendingZapClaims} claim${data.pendingZapClaims === 1 ? '' : 's'} still waiting to be paid.`
+            : 'No claims are waiting.'
+        }
+      >
         <div className="panel space-y-2 rounded-lg p-4">
           <div className="flex justify-between text-sm text-zinc-500">
             <span>
@@ -61,11 +60,13 @@ export function MoneyTab({ data, challenges }: { data: MoneyData; challenges?: C
         </Section>
       ) : null}
 
-      <div className="grid gap-4 sm:grid-cols-3">
-        <KpiCard label="P2P withdrawals" value={data.p2pWithdrawals} />
-        <KpiCard label="ONLINE payouts" value={data.onlinePayouts} />
-        <KpiCard label="Challenge wins" value={data.challengeStats.totalWins} />
-      </div>
+      <Section title="Stake movement" description="How many paid games moved sats. Lifetime, not today.">
+        <div className="grid gap-4 sm:grid-cols-3">
+          <KpiCard label="P2P deposits" value={data.p2pDeposits} />
+          <KpiCard label="P2P withdrawals" value={data.p2pWithdrawals} />
+          <KpiCard label="ONLINE payouts" value={data.onlinePayouts} />
+        </div>
+      </Section>
 
       {challenges?.pendingZaps && challenges.pendingZaps.length > 0 ? (
         <Section title="Pending zap claims">

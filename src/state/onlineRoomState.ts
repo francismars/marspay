@@ -38,13 +38,6 @@ import {
 } from './onlineRoomArchive';
 import { packReplayForArchive, type OnlineReplayWirePayload } from './onlineReplayCompact';
 import { trackOnlineOk } from '../telemetry/onlineTelemetry';
-import {
-  peekOnlineSeatLightningForSession,
-  refreshOnlineSeatLightningSocket,
-  removeOnlineSeatLightningForRoom,
-  removeOnlineSeatLightningForSession,
-  listOnlineSeatLightningRecordsForRoom,
-} from './onlineSeatLightningState';
 import { getAppNostrPubkeyForSession } from './nostrAppSessionState';
 
 const PIN_TTL_MS = 2 * 60 * 1000;
@@ -440,7 +433,7 @@ export function listOnlineRooms(): OnlineRoomListItem[] {
   }));
 }
 
-/** Re-bind a paid seat when the client reconnects with a new sessionID but same Nostr/Lightning pubkey. */
+/** Re-bind a paid seat when the client reconnects with a new sessionID but the same Nostr pubkey. */
 function tryReclaimPaidSeatOnJoin(
   room: OnlineRoom,
   roomId: string,
@@ -451,10 +444,6 @@ function tryReclaimPaidSeatOnJoin(
   const appPk = getAppNostrPubkeyForSession(sessionID);
   if (appPk) {
     claimPubkeys.add(appPk.toLowerCase());
-  }
-  const lnRec = peekOnlineSeatLightningForSession(sessionID);
-  if (lnRec?.zapPubkeyHex) {
-    claimPubkeys.add(lnRec.zapPubkeyHex.toLowerCase());
   }
   if (claimPubkeys.size === 0) {
     return false;
@@ -525,7 +514,6 @@ export function joinRoom(
   roomIdBySession.set(sessionID, roomId);
   refreshNostrLinkSocket(roomId, sessionID, socketID);
   refreshPendingSeatPaymentSocket(roomId, sessionID, socketID);
-  refreshOnlineSeatLightningSocket(sessionID, socketID);
   logOnlineState(`join roomId=${roomId} session=${sessionID} socket=${socketID}`);
   if (room.phase === 'postgame' || room.phase === 'finished') {
     ensurePostGameState(room);
@@ -581,11 +569,6 @@ export function leaveRoom(sessionID: string, options?: { releaseSeat?: boolean }
   }
   room.updatedAt = Date.now();
   clearNostrSessionStateOnLeave(sessionID, roomId, { releaseSeat, hasPaidSeat });
-  const lnRec = peekOnlineSeatLightningForSession(sessionID);
-  if (lnRec?.zapPubkeyHex) {
-    removeNostrLinkRegistrationForPubkey(roomId, lnRec.zapPubkeyHex, sessionID);
-  }
-  removeOnlineSeatLightningForSession(sessionID);
   logOnlineState(
     `leave roomId=${roomId} session=${sessionID} releaseSeat=${releaseSeat} hadPaidSeat=${hasPaidSeat}`
   );
@@ -648,12 +631,6 @@ export function deleteRoom(roomId: string) {
       roomIdByKind1EventId.delete(eventId);
     }
   }
-  for (const rec of listOnlineSeatLightningRecordsForRoom(roomId)) {
-    if (rec.zapPubkeyHex) {
-      removeNostrLinkRegistrationForPubkey(roomId, rec.zapPubkeyHex, rec.sessionID);
-    }
-  }
-  removeOnlineSeatLightningForRoom(roomId);
   logOnlineState(`deleted roomId=${roomId} code=${room.roomCode}`);
 }
 
@@ -850,7 +827,44 @@ export function registerNostrLink(
   return { ok: true, expiresAt };
 }
 
-/** Remove a pre-registered pubkey binding (Nostr link or Lightning?zap ephemeral key). */
+export function getLightningNostrLinkPubkey(roomId: string, sessionID: string): string | undefined {
+  const now = Date.now();
+  for (const rec of nostrLinkByRoomPubkey.values()) {
+    if (
+      rec.roomId === roomId &&
+      rec.sessionID === sessionID &&
+      rec.linkPayMethod === 'lightning' &&
+      rec.expiresAt > now
+    ) {
+      return rec.pubkey;
+    }
+  }
+  return undefined;
+}
+
+/** Drop throwaway Lightning keys for this session. A newer invoice replaces the previous one. */
+export function removeLightningNostrLinksForSession(roomId: string, sessionID: string): void {
+  for (const [key, rec] of [...nostrLinkByRoomPubkey.entries()]) {
+    if (rec.roomId === roomId && rec.sessionID === sessionID && rec.linkPayMethod === 'lightning') {
+      nostrLinkByRoomPubkey.delete(key);
+      logOnlineState(`removed lightning nostr link roomId=${roomId} session=${sessionID}`);
+    }
+  }
+}
+
+/** Keep a pre-registered pubkey until a host invoice can still settle, including receipt delay. */
+export function extendNostrLinkExpiry(roomId: string, pubkeyHex: string, expiresAt: number): number | undefined {
+  const rec = nostrLinkByRoomPubkey.get(nostrLinkKey(roomId, pubkeyHex));
+  if (!rec || rec.roomId !== roomId) {
+    return undefined;
+  }
+  if (expiresAt > rec.expiresAt) {
+    rec.expiresAt = expiresAt;
+  }
+  return rec.expiresAt;
+}
+
+/** Remove a pre-registered pubkey binding (Nostr link or Lightning zap ephemeral key). */
 export function removeNostrLinkRegistrationForPubkey(
   roomId: string,
   pubkeyHex: string,

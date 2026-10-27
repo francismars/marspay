@@ -112,7 +112,7 @@ Human tags: `[SESSION_CONNECT]`, `[SESSION_DISCONNECT]`, `[NOSTR_SIGNIN]`.
 | `online.room.joined_code` | Join by code |
 | `online.room.spectate` | Spectator joined |
 | `online.room.cancelled` | Host cancelled room |
-| `online.seat.lightning.requested` | Seat LNURL requested |
+| `online.seat.lightning.requested` | Seat Lightning invoice requested |
 | `online.seat.ready` | Ready toggled |
 | `online.game.started` | Match started |
 | `online.game.finished` | Match archived |

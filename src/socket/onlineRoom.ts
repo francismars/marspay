@@ -1,12 +1,12 @@
 import { Socket } from 'socket.io';
-import { bytesToHex } from '@noble/hashes/utils';
+import { decode } from 'light-bolt11-decoder';
 import {
+  finalizeEvent,
   generateSecretKey,
   getPublicKey,
   nip19,
   verifyEvent,
   type Event,
-  type EventTemplate,
 } from 'nostr-tools';
 import { publishGameKind1 } from '../calls/NDK/publishGameKind1';
 import { publishOnlineKind1Reply } from '../calls/NDK/publishOnlineKind1Reply';
@@ -28,7 +28,6 @@ import { ZAP_RECEIPT_RELAYS } from '../consts/nostrRelays';
 import { setNDKInstance } from '../calls/NDK/setNDKInstance';
 import { backfillZapReceiptsForKind1 } from '../calls/NDK/subscribeEvent';
 import createLNURLW from '../calls/LNBits/createLNURLW';
-import createLNURLP from '../calls/LNBits/createLNURLP';
 import getLNURLCallback from '../calls/LNAddress/getLNURLCallback';
 import getInvoiceFromCallback from '../calls/LNAddress/getInvoiceFromCallback';
 import payInvoice from '../calls/LNBits/payInvoice';
@@ -44,11 +43,6 @@ import {
   resolveArchivedRoomByCodeSync,
   resolveArchivedRoomByIdSync,
 } from '../state/onlineRoomArchive';
-import {
-  peekOnlineSeatLightningForSession,
-  registerOnlineSeatLightning,
-  removeOnlineSeatLightningForSession,
-} from '../state/onlineSeatLightningState';
 import { pruneOnlineSnapshotForWire } from '../state/onlineSnapshotWire';
 import {
   getAppNostrPubkeyForSession,
@@ -68,7 +62,9 @@ import {
   getOnlinePostGame,
   getOnlineMatchRoundHistory,
   getRoomByCode,
+  extendNostrLinkExpiry,
   getActiveNostrLinkPubkey,
+  getLightningNostrLinkPubkey,
   getRoomById,
   getRoomBySession,
   hasAnyPaidSeat,
@@ -82,6 +78,7 @@ import {
   clearPendingNostrChallenge,
   registerNostrLink,
   registerPendingSeatPayment,
+  removeLightningNostrLinksForSession,
   removeNostrLinkRegistrationForPubkey,
   leaveRoom,
   listOnlineHistoryMerged,
@@ -102,8 +99,8 @@ import {
 
 const ONLINE_TICK_MS = 100;
 const ONLINE_PAYOUT_MULTIPLIER = 0.95;
-/** LNURL-pay pending link TTL for anonymous online seat (must match client UX). */
-const ONLINE_SEAT_LIGHTNING_TTL_MS = 15 * 60 * 1000;
+/** Kind-9735 can arrive after the player pays a host invoice that is about to expire. */
+const ONLINE_SEAT_LIGHTNING_RECEIPT_GRACE_MS = 10 * 60 * 1000;
 
 
 function logOnline(sessionID: string | undefined, message: string) {
@@ -1509,10 +1506,12 @@ export async function requestOnlineSeatLightningHandler(
     }
     payAmount = room.buyin;
   }
-  const pending = peekOnlineSeatLightningForSession(sessionID);
-  if (pending?.zapPubkeyHex) {
-    removeNostrLinkRegistrationForPubkey(room.roomId, pending.zapPubkeyHex, sessionID);
+  const kind1EventId = purpose === 'rematch' ? room.postGame.rematchEventId : room.kind1EventId;
+  if (!kind1EventId) {
+    rejectSeatLightning(purpose === 'rematch' ? 'rematch_not_ready' : 'kind1_not_ready');
+    return;
   }
+  removeLightningNostrLinksForSession(room.roomId, sessionID);
   const sk = generateSecretKey();
   const pkHex = getPublicKey(sk);
   const nostrReg = registerNostrLink(room.roomId, sessionID, socket.id, pkHex, {
@@ -1522,40 +1521,60 @@ export async function requestOnlineSeatLightningHandler(
     rejectSeatLightning(nostrReg.reason);
     return;
   }
-  const desc = purpose === 'rematch' ? `CD rematch ${room.roomCode}` : `CD online ${room.roomCode}`;
-  const created = await createLNURLP(desc, payAmount, payAmount, 0);
-  if (!created) {
+  try {
+    const ctx = await resolveOnlineSeatZapContext(kind1EventId, payAmount);
+    if (!ctx.meta.callback) {
+      throw new Error('recipient_lnurl_no_zap');
+    }
+    const signedZapRequest = finalizeEvent(
+      buildKind1ZapRequestTemplate({
+        kind1EventId,
+        kind1AuthorPubkey: ctx.kind1AuthorPubkey,
+        amountMsats: payAmount * 1000,
+        relays: ZAP_RECEIPT_RELAYS,
+        comment: '',
+        lnurlBech32: ctx.lnurlBech32,
+      }),
+      sk
+    );
+    const pr = await fetchZapInvoiceFromCallback(
+      ctx.meta.callback,
+      signedZapRequest,
+      ctx.lnurlBech32,
+      payAmount * 1000
+    );
+    const invoiceExpiresAt = bolt11ExpiresAtMs(pr) ?? Date.now() + 60 * 60 * 1000;
+    const linkedUntil = extendNostrLinkExpiry(
+      room.roomId,
+      pkHex,
+      invoiceExpiresAt + ONLINE_SEAT_LIGHTNING_RECEIPT_GRACE_MS
+    );
+    if (linkedUntil == null) {
+      return;
+    }
+    const lightningUri = pr.startsWith('lightning:') ? pr : `lightning:${pr}`;
+    socket.emit('resOnlineSeatLightning', {
+      roomId: room.roomId,
+      pr,
+      lightningUri,
+      buyin: payAmount,
+      expiresAt: invoiceExpiresAt,
+    });
+    trackOnlineOk('online.seat.lightning.requested', {
+      sessionID,
+      roomId: room.roomId,
+      roomCode: room.roomCode,
+      buyin: payAmount,
+      meta: { purpose },
+    });
+  } catch (e) {
     removeNostrLinkRegistrationForPubkey(room.roomId, pkHex, sessionID);
-    rejectSeatLightning('lnbits_unavailable');
-    return;
+    const current = getLightningNostrLinkPubkey(room.roomId, sessionID);
+    if (current && current !== pkHex.toLowerCase()) {
+      return;
+    }
+    rejectSeatLightning(e instanceof Error ? e.message : 'invoice_failed');
   }
-  const expiresAt = Date.now() + ONLINE_SEAT_LIGHTNING_TTL_MS;
-  registerOnlineSeatLightning({
-    roomId: room.roomId,
-    sessionID,
-    socketID: socket.id,
-    buyin: payAmount,
-    expiresAt,
-    lnurlpId: created.id,
-    zapSecretKeyHex: bytesToHex(sk),
-    zapPubkeyHex: pkHex,
-    purpose,
-  });
-  const raw = created.lnurlp;
-  const lightningUri = raw.startsWith('lightning:') ? raw : `lightning:${raw}`;
-  socket.emit('resOnlineSeatLightning', {
-    lnurl: raw,
-    lightningUri,
-    buyin: payAmount,
-    expiresAt,
-  });
-  trackOnlineOk('online.seat.lightning.requested', {
-    sessionID,
-    roomId: room.roomId,
-    roomCode: room.roomCode,
-    buyin: payAmount,
-    meta: { purpose },
-  });
 }
 
 export function cancelOnlineSeatLightningHandler(socket: Socket) {
@@ -1563,13 +1582,33 @@ export function cancelOnlineSeatLightningHandler(socket: Socket) {
   if (!sessionID) {
     return;
   }
-  const lnRec = peekOnlineSeatLightningForSession(sessionID);
   const room = getRoomBySession(sessionID);
-  if (lnRec?.zapPubkeyHex && room) {
-    removeNostrLinkRegistrationForPubkey(room.roomId, lnRec.zapPubkeyHex, sessionID);
+  if (room) {
+    removeLightningNostrLinksForSession(room.roomId, sessionID);
   }
-  removeOnlineSeatLightningForSession(sessionID);
   socket.emit('resOnlineSeatLightningCancelled', {});
+}
+
+/** Host zap invoices expire on their own timer. Fall back to the BOLT11 default of one hour. */
+function bolt11ExpiresAtMs(pr: string): number | undefined {
+  try {
+    const raw = pr.trim().replace(/^lightning:/i, '');
+    const decoded = decode(raw);
+    const sections = decoded.sections as Array<{ name?: string; value?: unknown }>;
+    const readNumber = (name: string) => {
+      const section = sections.find((item) => item.name === name);
+      const value = typeof section?.value === 'number' ? section.value : Number(section?.value);
+      return Number.isFinite(value) ? value : undefined;
+    };
+    const timestampSec = readNumber('timestamp');
+    const expirySec = readNumber('expiry') ?? 3600;
+    if (timestampSec == null) {
+      return undefined;
+    }
+    return (timestampSec + expirySec) * 1000;
+  } catch {
+    return undefined;
+  }
 }
 
 export function startOnlineLoop() {

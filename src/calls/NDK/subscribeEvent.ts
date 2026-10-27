@@ -190,6 +190,19 @@ async function listenToSubscriptions(event: NDKEvent) {
       console.log(
         `${dateNow()} [${sessionID}] [ONLINE] rematch paid roomId=${room.roomId} amount=${rematch.requiredAmount}`
       );
+      const winnerRole = room.postGame.winnerRole;
+      const loserRole =
+        winnerRole === PlayerRole.Player1 ? PlayerRole.Player2 : PlayerRole.Player1;
+      const loserSeat = room.seats.get(loserRole);
+      if (loserSeat?.payMethod === 'lightning' && loserSeat.sessionID) {
+        trackOnlineOk('online.seat.paid', {
+          sessionID: loserSeat.sessionID,
+          pubkeyPrefix: resolveTrackPubkeyPrefix(loserSeat.sessionID, room.roomId),
+          roomId: room.roomId,
+          amountSats: rematch.requiredAmount,
+          meta: { method: 'lightning', rematch: true },
+        });
+      }
       io.to(room.roomId).emit('onlineRoomUpdated', serializeRoom(rematch.room));
       io.emit('resListOnlineRooms', {
         rooms: listOnlineRooms(),
@@ -360,7 +373,9 @@ async function listenToSubscriptions(event: NDKEvent) {
         pubkeyPrefix: resolveTrackPubkeyPrefix(payRecord.sessionID, room.roomId),
         roomId: room.roomId,
         amountSats: zapAmount,
-        meta: { method: payRecord.seatMetaMethod },
+        meta: {
+          method: payRecord.payMethod === 'lightning' ? 'lightning' : payRecord.seatMetaMethod,
+        },
       });
       io.to(room.roomId).emit('onlineSeatAssigned', {
         roomId: room.roomId,

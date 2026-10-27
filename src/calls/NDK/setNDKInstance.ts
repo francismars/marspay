@@ -41,11 +41,14 @@ export async function setNDKInstance() {
       }
     });
   });
-  // pool.connect() waits for every relay unless given a timeout. A relay
-  // that never opens (purplepag.es 502) hangs here, and the await below
-  // never runs — even after a majority of relays have already connected.
-  await ndkInstance.connect(NDK_CONNECT_TIMEOUT_MS);
-  await relayConnected;
+  // connect() returns only when every relay is up, or after the timeout.
+  // Race the majority promise so one dead relay does not hold kind1 for
+  // the whole timeout; its connection keeps going in the background.
+  const connecting = ndkInstance.connect(NDK_CONNECT_TIMEOUT_MS);
+  connecting.catch(() => {
+    /* keep a late pool failure from becoming an unhandled rejection */
+  });
+  await Promise.race([connecting, relayConnected]);
   console.log(
     `${dateNow()} [NDK] ready (${connectedRelays}/${NOSTR_RELAYS.length} relays connected)`
   );

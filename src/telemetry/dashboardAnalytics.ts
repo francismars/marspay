@@ -8,6 +8,7 @@ import { getChallengeTelemetrySnapshot } from '../state/challengeTelemetry';
 import { listOnlineRooms, getRoomBySession } from '../state/onlineRoomState';
 import {
   getEventLogByteSize,
+  isEventLogReady,
   scanEvents,
   type StoredTrackEvent,
 } from './eventLog';
@@ -286,11 +287,29 @@ function buildAcquisitionSnapshot(hours: number) {
   };
 }
 
-export function buildAlertsSnapshot(window: AnalyticsWindow = '24h'): {
+const ALERTS_CACHE_TTL_MS = 45_000;
+
+type AlertsSnapshot = {
   fetchedAt: string;
   window: AnalyticsWindow;
   alerts: DashboardAlert[];
-} {
+};
+
+const alertsCache = new Map<AnalyticsWindow, { at: number; snapshot: AlertsSnapshot }>();
+
+export function buildAlertsSnapshot(window: AnalyticsWindow = '24h'): AlertsSnapshot {
+  const cached = alertsCache.get(window);
+  if (cached && Date.now() - cached.at < ALERTS_CACHE_TTL_MS) {
+    return cached.snapshot;
+  }
+  const snapshot = computeAlertsSnapshot(window);
+  if (isEventLogReady()) {
+    alertsCache.set(window, { at: Date.now(), snapshot });
+  }
+  return snapshot;
+}
+
+function computeAlertsSnapshot(window: AnalyticsWindow): AlertsSnapshot {
   const hours = windowHours(window);
   const sinceTs = sinceHoursAgo(hours);
   const events = eventsInWindow(window);

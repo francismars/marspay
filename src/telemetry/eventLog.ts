@@ -22,14 +22,23 @@ export type StoredTrackEvent = {
   meta?: Record<string, string | number | boolean>;
 };
 
-const RING_MAX = 500;
 const EVENTS_FILE = 'events.jsonl';
 const ROTATE_BYTES = 50 * 1024 * 1024;
 const PERSIST_DEBOUNCE_MS = 500;
+const SCAN_CAP = 10_000;
+const RECENT_CAP = 200;
+const TAIL_CHUNK_BYTES = 256 * 1024;
 
-const ringBuffer: StoredTrackEvent[] = [];
+/**
+ * Newest events kept in memory. Dashboard reads use this instead of
+ * `events.jsonl`, so a poll cannot stall the game loop on a full-file read.
+ * Same window scanEvents already walked (the last SCAN_CAP lines).
+ */
+const tailBuffer: StoredTrackEvent[] = [];
 const pendingLines: string[] = [];
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
+let tailHydrated = false;
+let tailHydration: Promise<void> | null = null;
 
 function telemetryDir(): string {
   return path.join(process.cwd(), 'data', 'telemetry');
@@ -72,11 +81,19 @@ async function flushPendingLines(): Promise<void> {
   }
 }
 
-export function recordTrackEvent(event: StoredTrackEvent): void {
-  ringBuffer.push(event);
-  if (ringBuffer.length > RING_MAX) {
-    ringBuffer.splice(0, ringBuffer.length - RING_MAX);
+function eventKey(event: StoredTrackEvent): string {
+  return event.ts + event.event + (event.sessionID ?? '');
+}
+
+function pushTail(event: StoredTrackEvent): void {
+  tailBuffer.push(event);
+  if (tailBuffer.length > SCAN_CAP) {
+    tailBuffer.splice(0, tailBuffer.length - SCAN_CAP);
   }
+}
+
+export function recordTrackEvent(event: StoredTrackEvent): void {
+  pushTail(event);
   pendingLines.push(JSON.stringify(event) + '\n');
   if (!flushTimer) {
     flushTimer = setTimeout(() => {
@@ -132,35 +149,6 @@ function matchesFilter(
   return true;
 }
 
-export function tailEventsFromDisk(
-  limit: number,
-  filters?: {
-    eventPrefix?: string;
-    outcome?: TrackOutcome;
-    sinceTs?: string;
-    sessionID?: string;
-    pubkeyPrefix?: string;
-    roomCode?: string;
-  }
-): StoredTrackEvent[] {
-  const filePath = eventsFilePath();
-  if (!fs.existsSync(filePath) || limit <= 0) return [];
-  try {
-    const content = fs.readFileSync(filePath, 'utf8');
-    const lines = content.split('\n').filter(Boolean);
-    const rows: StoredTrackEvent[] = [];
-    for (let i = lines.length - 1; i >= 0 && rows.length < limit; i--) {
-      const row = parseEventLine(lines[i]);
-      if (!row) continue;
-      if (!extendedMatchesFilter(row, filters)) continue;
-      rows.push(row);
-    }
-    return rows.reverse();
-  } catch {
-    return [];
-  }
-}
-
 export function getRecentEvents(
   limit: number,
   filters?: {
@@ -172,19 +160,9 @@ export function getRecentEvents(
     roomCode?: string;
   }
 ): StoredTrackEvent[] {
-  const capped = Math.min(Math.max(limit, 1), 200);
-  const fromRing = ringBuffer.filter((e) => extendedMatchesFilter(e, filters));
-  if (fromRing.length >= capped) {
-    return fromRing.slice(-capped);
-  }
-  const needFromDisk = capped - fromRing.length;
-  const fromDisk = tailEventsFromDisk(needFromDisk + fromRing.length, filters);
-  const ringTs = new Set(fromRing.map((e) => e.ts + e.event + (e.sessionID ?? '')));
-  const merged = [
-    ...fromDisk.filter((e) => !ringTs.has(e.ts + e.event + (e.sessionID ?? ''))),
-    ...fromRing,
-  ];
-  return merged.slice(-capped);
+  ensureTailHydrating();
+  const capped = Math.min(Math.max(limit, 1), RECENT_CAP);
+  return tailBuffer.filter((e) => extendedMatchesFilter(e, filters)).slice(-capped);
 }
 
 function extendedMatchesFilter(
@@ -205,9 +183,7 @@ function extendedMatchesFilter(
   return true;
 }
 
-const SCAN_CAP = 10_000;
-
-/** Scan ring + jsonl tail (newest first) up to cap lines. */
+/** Newest matching events from the in-memory tail. Does not read the log file. */
 export function scanEvents(
   limit: number,
   filters?: {
@@ -220,40 +196,16 @@ export function scanEvents(
     events?: string[];
   }
 ): StoredTrackEvent[] {
+  ensureTailHydrating();
   const capped = Math.min(Math.max(limit, 1), SCAN_CAP);
   const eventSet = filters?.events ? new Set(filters.events) : undefined;
-  const match = (e: StoredTrackEvent) => {
-    if (!extendedMatchesFilter(e, filters)) return false;
-    if (eventSet && !eventSet.has(e.event)) return false;
-    return true;
-  };
-
-  const fromRing = ringBuffer.filter(match);
-  if (fromRing.length >= capped) {
-    return fromRing.slice(-capped);
-  }
-
-  const filePath = eventsFilePath();
-  if (!fs.existsSync(filePath)) return fromRing;
-
-  try {
-    const content = fs.readFileSync(filePath, 'utf8');
-    const lines = content.split('\n').filter(Boolean);
-    const start = Math.max(0, lines.length - SCAN_CAP);
-    const rows: StoredTrackEvent[] = [];
-    const ringKeys = new Set(fromRing.map((e) => e.ts + e.event + (e.sessionID ?? '')));
-
-    for (let i = lines.length - 1; i >= start && rows.length + fromRing.length < capped; i--) {
-      const row = parseEventLine(lines[i]);
-      if (!row || !match(row)) continue;
-      const key = row.ts + row.event + (row.sessionID ?? '');
-      if (ringKeys.has(key)) continue;
-      rows.push(row);
-    }
-    return [...rows.reverse(), ...fromRing].slice(-capped);
-  } catch {
-    return fromRing;
-  }
+  return tailBuffer
+    .filter((e) => {
+      if (!extendedMatchesFilter(e, filters)) return false;
+      if (eventSet && !eventSet.has(e.event)) return false;
+      return true;
+    })
+    .slice(-capped);
 }
 
 export function countEventsSince(
@@ -268,22 +220,98 @@ export function countEventsSince(
 }
 
 export function getLastEventForSession(sessionID: string): StoredTrackEvent | undefined {
-  for (let i = ringBuffer.length - 1; i >= 0; i--) {
-    if (ringBuffer[i].sessionID === sessionID) return ringBuffer[i];
+  ensureTailHydrating();
+  for (let i = tailBuffer.length - 1; i >= 0; i--) {
+    if (tailBuffer[i]?.sessionID === sessionID) return tailBuffer[i];
   }
-  const fromDisk = tailEventsFromDisk(200, { sessionID });
-  return fromDisk.length > 0 ? fromDisk[fromDisk.length - 1] : undefined;
+  return undefined;
 }
 
 export function getEventsForSession(sessionID: string, limit: number): StoredTrackEvent[] {
-  const capped = Math.min(Math.max(limit, 1), 200);
-  const fromRing = ringBuffer.filter((e) => e.sessionID === sessionID);
-  if (fromRing.length >= capped) return fromRing.slice(-capped);
-  const fromDisk = tailEventsFromDisk(capped, { sessionID });
-  const ringKeys = new Set(fromRing.map((e) => e.ts + e.event));
-  const merged = [
-    ...fromDisk.filter((e) => !ringKeys.has(e.ts + e.event)),
-    ...fromRing,
-  ];
-  return merged.slice(-capped);
+  ensureTailHydrating();
+  const capped = Math.min(Math.max(limit, 1), RECENT_CAP);
+  return tailBuffer.filter((e) => e.sessionID === sessionID).slice(-capped);
 }
+
+export function isEventLogReady(): boolean {
+  return tailHydrated;
+}
+
+/** Load the log tail once. Resolves immediately when the tail is already in memory. */
+export function warmEventLog(): Promise<void> {
+  if (tailHydrated) return Promise.resolve();
+  if (!tailHydration) {
+    tailHydration = hydrateTailFromDisk()
+      .catch((err) => {
+        console.error('[telemetry] events.jsonl tail load failed', err);
+      })
+      .finally(() => {
+        tailHydration = null;
+      });
+  }
+  return tailHydration;
+}
+
+function ensureTailHydrating(): void {
+  if (!tailHydrated) void warmEventLog();
+}
+
+/** Read the end of the file until `maxLines` newlines, without loading the rest. */
+async function readLastLines(filePath: string, maxLines: number): Promise<string[]> {
+  const fh = await fsPromises.open(filePath, 'r');
+  try {
+    const stat = await fh.stat();
+    if (stat.size === 0) return [];
+    let pos = stat.size;
+    const parts: Buffer[] = [];
+    let newlines = 0;
+    while (pos > 0 && newlines <= maxLines) {
+      const size = Math.min(TAIL_CHUNK_BYTES, pos);
+      pos -= size;
+      const buf = Buffer.allocUnsafe(size);
+      const { bytesRead } = await fh.read(buf, 0, size, pos);
+      const slice = bytesRead === size ? buf : buf.subarray(0, bytesRead);
+      parts.unshift(slice);
+      for (let i = 0; i < slice.length; i++) {
+        if (slice[i] === 10) newlines++;
+      }
+    }
+    const lines = Buffer.concat(parts)
+      .toString('utf8')
+      .split('\n')
+      .filter((line) => line.trim().length > 0);
+    if (pos > 0 && lines.length > 0) lines.shift();
+    return lines.slice(-maxLines);
+  } finally {
+    await fh.close();
+  }
+}
+
+async function hydrateTailFromDisk(): Promise<void> {
+  const filePath = eventsFilePath();
+  let lines: string[] = [];
+  try {
+    lines = await readLastLines(filePath, SCAN_CAP);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') throw err;
+  }
+
+  const parsed: StoredTrackEvent[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const row = parseEventLine(lines[i] ?? '');
+    if (row) parsed.push(row);
+    if ((i + 1) % 2000 === 0) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  }
+
+  const loadedKeys = new Set(parsed.map(eventKey));
+  const arrived = tailBuffer.filter((e) => !loadedKeys.has(eventKey(e)));
+  tailBuffer.length = 0;
+  for (const event of parsed) pushTail(event);
+  for (const event of arrived) pushTail(event);
+  tailHydrated = true;
+}
+
+void warmEventLog();

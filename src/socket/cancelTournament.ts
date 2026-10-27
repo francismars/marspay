@@ -14,6 +14,7 @@ import {
 import { setIDToSocket } from '../state/sessionState';
 import { GameMode } from '../types/game';
 import { deleteKind1sFromSession, getKind1sfromSessionID } from '../state/nostrState';
+import { netPayoutSats } from '../utils/payout';
 
 export async function cancelTournament(socket: Socket) {
   const sessionID = socket.data.sessionID;
@@ -80,7 +81,7 @@ export async function cancelTournament(socket: Socket) {
   console.log(
     `${dateNow()} [${sessionID}] Creating LNRURLw with ${amount} sats and ${depositcount} uses.`
   );
-  const lnurlw = await createLNURLW(Math.floor(amount * 0.95), depositcount);
+  const lnurlw = await createLNURLW(netPayoutSats(amount), depositcount);
   if (lnurlw) {
     console.log(`${dateNow()} [${sessionID}] Created LNURLw ${lnurlw.id}.`);
     setIDToLNURLW(sessionID, {

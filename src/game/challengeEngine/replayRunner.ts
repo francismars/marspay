@@ -73,6 +73,8 @@ export function replayChallengeSim(params: {
   seed: string;
   challenge: ChallengeCatalogEntry;
   inputLog: ChallengeInputEntry[];
+  /** Step ceiling. Defaults to the production cap. */
+  maxSimSteps?: number;
 }): ReplaySimResult {
   initRunRng(params.seed);
   try {
@@ -86,8 +88,9 @@ export function replayChallengeSim(params: {
       inputsByStep.set(entry.tick, list);
     }
 
+    const limit = params.maxSimSteps ?? MAX_SIM_STEPS;
     let simStep = 0;
-    while (!state.gameEnded && simStep < MAX_SIM_STEPS) {
+    while (!state.gameEnded && simStep < limit) {
       const batch = inputsByStep.get(simStep) ?? [];
       for (const inp of batch) {
         const dir = parseDir(inp.dir);
@@ -117,6 +120,8 @@ export function replayChallengeWin(params: {
   challenge: ChallengeCatalogEntry;
   inputLog: ChallengeInputEntry[];
   countdownStartTick?: number;
+  /** Step ceiling. Defaults to the production cap. */
+  maxSimSteps?: number;
 }): ReplayResult {
   initRunRng(params.seed);
   try {
@@ -130,8 +135,9 @@ export function replayChallengeWin(params: {
       inputsByStep.set(entry.tick, list);
     }
 
+    const limit = params.maxSimSteps ?? MAX_SIM_STEPS;
     let simStep = 0;
-    while (!state.gameEnded && simStep < MAX_SIM_STEPS) {
+    while (!state.gameEnded && simStep < limit) {
       const batch = inputsByStep.get(simStep) ?? [];
       for (const inp of batch) {
         const dir = parseDir(inp.dir);

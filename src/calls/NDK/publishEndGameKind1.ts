@@ -7,6 +7,7 @@ import { nip19 } from 'nostr-tools';
 import { ndkInstance } from './setNDKInstance';
 import { GameMode } from '../../types/game';
 import { resolveTournamentChampionEntrantRole } from '../../utils/winnerNames';
+import { netPayoutSats } from '../../utils/payout';
 
 export async function publishEndGameKind1(sessionID: string) {
   const gameInfo = getGameInfoFromID(sessionID);
@@ -62,8 +63,8 @@ export async function publishEndGameKind1(sessionID: string) {
   }
   if (gameInfo.mode === GameMode.TOURNAMENTNOSTR) {
     const championMention = winnerID ? `nostr:${winnernprofile}` : winnerInfo.name;
-    ndkEvent.content = `🏆 TOURNAMENT COMPLETE ${emojisGame}\nChampion: ${championMention}\nCongratulations ${winnerInfo.name}!\nFinal payout: ${Math.floor(
-      winnerAmount * 0.95
+    ndkEvent.content = `🏆 TOURNAMENT COMPLETE ${emojisGame}\nChampion: ${championMention}\nCongratulations ${winnerInfo.name}!\nFinal payout: ${netPayoutSats(
+      winnerAmount
     )} sats.\n\nThanks to everyone who joined.`;
   } else {
     const loser = getOpponent(winner);

@@ -12,6 +12,7 @@ import { BUYINMINPRACTICE } from '../consts/values';
 import { publishGameKind1 } from '../calls/NDK/publishGameKind1';
 import { trackEvent } from '../telemetry/trackEvent';
 import { resolveTrackPubkeyPrefix } from '../telemetry/resolveTrackPubkeyPrefix';
+import { netPayoutSats } from '../utils/payout';
 
 const GAME_INFO_MISSING_LOG_COOLDOWN_MS = 10 * 60 * 1000;
 const lastGameInfoMissingLogAt = new Map<string, number>();
@@ -64,7 +65,7 @@ export function gameFinished(socket: Socket, winnerP: PlayerRole) {
     const loserValue = gameInfo.players.get(loserP)?.value;
     const newWinnerValue =
       winnerValue && loserValue
-        ? Math.floor((winnerValue + loserValue) * 0.95)
+        ? netPayoutSats(winnerValue + loserValue)
         : undefined;
     if (!newWinnerValue) {
       console.error(

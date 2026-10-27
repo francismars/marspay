@@ -111,5 +111,5 @@
     "skipLibCheck": true /* Skip type checking all .d.ts files. */
   },
   "include": ["src/**/*"],
-  "exclude": ["admin", "node_modules", "dist"]
+  "exclude": ["admin", "node_modules", "dist", "src/**/*.test.ts", "src/**/*.fixture.ts"]
 }

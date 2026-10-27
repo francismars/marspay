@@ -31,13 +31,15 @@
     "globals": "^17.13.0",
     "nodemon": "^3.1.14",
     "ts-node": "^10.9.2",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.12"
   },
   "scripts": {
     "dev": "nodemon",
     "build:admin": "npm --prefix admin run build",
     "build": "tsc && npm run build:admin",
     "start": "node dist/server.js",
-    "lint": "eslint src --ext .ts"
+    "lint": "eslint src --ext .ts",
+    "test": "vitest run"
   }
 }

@@ -97,8 +97,9 @@ import {
   voteOnlineDoubleOrNothing,
 } from '../state/onlineRoomState';
 
+import { netPayoutSats } from '../utils/payout';
+
 const ONLINE_TICK_MS = 100;
-const ONLINE_PAYOUT_MULTIPLIER = 0.95;
 /** Kind-9735 can arrive after the player pays a host invoice that is about to expire. */
 const ONLINE_SEAT_LIGHTNING_RECEIPT_GRACE_MS = 10 * 60 * 1000;
 
@@ -246,7 +247,7 @@ function publishOnlineMatchResult(room: NonNullable<ReturnType<typeof getRoomByI
   const winnerSeat = [...room.seats.values()].find(
     (seat) => seat.status === 'paid' && seat.sessionID === room.postGame.winnerSessionID
   );
-  const netPrize = Math.max(0, Math.floor((room.postGame.totalPrize ?? 0) * ONLINE_PAYOUT_MULTIPLIER));
+  const netPrize = netPayoutSats(room.postGame.totalPrize ?? 0);
   const mentions = getSeatMentions(room.roomId);
   const [p1, p2] = mentions;
   const scoreLine = `${formatOnlinePlayerNostrLabel(p1 ?? { name: 'Player 1' })} ${room.snapshot.state.score[0]} - ${formatOnlinePlayerNostrLabel(p2 ?? { name: 'Player 2' })} ${room.snapshot.state.score[1]}.`;
@@ -877,7 +878,7 @@ export async function createOnlineWithdrawalHandler(socket: Socket, payload: { r
     socket.emit('onlinePinInvalid', { reason: 'withdraw_started' });
     return;
   }
-  const amount = Math.max(0, Math.floor(info.winnerPoints * ONLINE_PAYOUT_MULTIPLIER));
+  const amount = netPayoutSats(info.winnerPoints);
   if (amount <= 0) {
     logOnline(sessionID, `createOnlineWithdrawal skipped roomId=${payload.roomId} reason=zero_amount`);
     socket.emit('resCreateOnlineWithdrawal', { roomId: payload.roomId, lnurlw: 'pass' });
@@ -945,7 +946,7 @@ export async function createOnlineNostrPayoutHandler(socket: Socket, payload: { 
     socket.emit('onlinePinInvalid', { reason: 'winner_ln_missing' });
     return;
   }
-  const amount = Math.max(0, Math.floor(info.winnerPoints * ONLINE_PAYOUT_MULTIPLIER));
+  const amount = netPayoutSats(info.winnerPoints);
   if (amount <= 0) {
     logOnline(sessionID, `createOnlineNostrPayout skipped roomId=${payload.roomId} reason=zero_amount`);
     socket.emit('onlinePinInvalid', { reason: 'zero_amount' });
@@ -1023,10 +1024,7 @@ export function onlineDoubleOrNothingHandler(socket: Socket, payload: { roomId: 
       const loserRole =
         winnerRole === PlayerRole.Player1 ? PlayerRole.Player2 : PlayerRole.Player1;
       const loserSeat = loserRole ? room.seats.get(loserRole) : undefined;
-      const requiredAmount = Math.max(
-        1,
-        Math.floor(room.postGame.winnerPoints * ONLINE_PAYOUT_MULTIPLIER)
-      );
+      const requiredAmount = Math.max(1, netPayoutSats(room.postGame.winnerPoints));
       markOnlineRematchPending({
         roomId: room.roomId,
         requiredAmount,

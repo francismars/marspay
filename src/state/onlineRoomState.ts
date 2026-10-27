@@ -39,6 +39,7 @@ import {
 import { packReplayForArchive, type OnlineReplayWirePayload } from './onlineReplayCompact';
 import { trackOnlineOk } from '../telemetry/onlineTelemetry';
 import { getAppNostrPubkeyForSession } from './nostrAppSessionState';
+import { netPayoutSats } from '../utils/payout';
 
 const PIN_TTL_MS = 2 * 60 * 1000;
 /** Home / NIP-07 path: pubkey linked to session before zap (no PIN in comment). */
@@ -51,7 +52,6 @@ const ROOM_CLEANUP_MS = 15 * 1000;
 const SEAT_DISCONNECT_TTL_MS = 15 * 60 * 1000;
 /** Fallback delete if immediate removal after payout failed (should be rare). */
 const SETTLED_ROOM_DELETE_FALLBACK_MS = 30 * 1000;
-const ONLINE_PAYOUT_MULTIPLIER = 0.95;
 const ONLINE_REPLAY_TICK_MS = 100;
 const ONLINE_REPLAY_MAX_FRAMES = 3_600;
 
@@ -267,10 +267,7 @@ function roomToFinishedResult(room: OnlineRoom): NonNullable<OnlineRoomListItem[
     p2Name: p2Seat?.name ?? room.snapshot.state.p2Name ?? 'Player 2',
     p1Score: room.snapshot.state.score?.[0] ?? 0,
     p2Score: room.snapshot.state.score?.[1] ?? 0,
-    netPrize: Math.max(
-      0,
-      Math.floor(winnerPointsFromSnapshot(room) * ONLINE_PAYOUT_MULTIPLIER)
-    ),
+    netPrize: netPayoutSats(winnerPointsFromSnapshot(room)),
     p1Picture: p1Seat?.picture ?? room.postGame.p1Picture,
     p2Picture: p2Seat?.picture ?? room.postGame.p2Picture,
     winnerPicture: room.postGame.winnerPicture,

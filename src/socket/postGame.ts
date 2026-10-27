@@ -15,6 +15,7 @@ import createLNURLW from '../calls/LNBits/createLNURLW';
 import { P2PMAXWITHDRAWALS } from '../consts/values';
 import { handleEndOfSession } from '../state/cleanupState';
 import { publishEndGameKind1 } from '../calls/NDK/publishEndGameKind1';
+import { netPayoutSats } from '../utils/payout';
 
 interface Response {
   mode: GameMode;
@@ -85,7 +86,7 @@ export async function createWithdrawalPostGame(socket: Socket) {
         : winnerValue;
     const amount =
       gameInfo.mode == GameMode.TOURNAMENT || gameInfo.mode == GameMode.TOURNAMENTNOSTR
-        ? Math.floor(grossAmount * 0.95)
+        ? netPayoutSats(grossAmount)
         : grossAmount;
     if (amount == 0) {
       console.log(

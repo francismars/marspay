@@ -41,7 +41,10 @@ export async function setNDKInstance() {
       }
     });
   });
-  await ndkInstance.connect();
+  // pool.connect() waits for every relay unless given a timeout. A relay
+  // that never opens (purplepag.es 502) hangs here, and the await below
+  // never runs — even after a majority of relays have already connected.
+  await ndkInstance.connect(NDK_CONNECT_TIMEOUT_MS);
   await relayConnected;
   console.log(
     `${dateNow()} [NDK] ready (${connectedRelays}/${NOSTR_RELAYS.length} relays connected)`

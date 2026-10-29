@@ -4,6 +4,7 @@ import { PlayerRole } from '../types/game';
 import { dateNow } from '../utils/time';
 import {
   JoinPinRecord,
+  OnlineForfeitPause,
   OnlineRoom,
   OnlineMatchRoundSummary,
   OnlineRoomListItem,
@@ -39,6 +40,7 @@ import {
 import { packReplayForArchive, type OnlineReplayWirePayload } from './onlineReplayCompact';
 import { trackOnlineOk } from '../telemetry/onlineTelemetry';
 import { getAppNostrPubkeyForSession } from './nostrAppSessionState';
+import { getSocketFromID } from './sessionState';
 import { netPayoutSats } from '../utils/payout';
 
 const PIN_TTL_MS = 2 * 60 * 1000;
@@ -49,7 +51,11 @@ const PENDING_SEAT_PAYMENT_TTL_MS = 2 * 60 * 60 * 1000;
 const NOSTR_CHALLENGE_TTL_MS = 5 * 60 * 1000;
 const ROOM_IDLE_TTL_MS = 20 * 60 * 1000;
 const ROOM_CLEANUP_MS = 15 * 1000;
-const SEAT_DISCONNECT_TTL_MS = 15 * 60 * 1000;
+/**
+ * Cumulative time a paid seat may be disconnected before forfeit.
+ * Reconnects pause the clock; they do not reset it.
+ */
+export const ONLINE_FORFEIT_DISCONNECT_MS = 5 * 60 * 1000;
 /** Fallback delete if immediate removal after payout failed (should be rare). */
 const SETTLED_ROOM_DELETE_FALLBACK_MS = 30 * 1000;
 const ONLINE_REPLAY_TICK_MS = 100;
@@ -93,6 +99,56 @@ function nostrLinkKey(roomId: string, pubkey: string) {
 
 function logOnlineState(message: string) {
   console.log(`${dateNow()} [ONLINE_STATE] ${message}`);
+}
+
+type OnlineRoomChange = {
+  roomId: string;
+  prev: OnlineRoom['phase'] | null;
+  next: OnlineRoom['phase'] | null;
+  /** Clients still in the socket room should take the room-not-found path. */
+  roomNotFound?: boolean;
+};
+
+let notifyOnlineRoomChange: (event: OnlineRoomChange) => void = () => {};
+
+/** Socket layer registers this so phase changes broadcast without a state→socket import. */
+export function setOnlineRoomChangeNotifier(fn: (event: OnlineRoomChange) => void) {
+  notifyOnlineRoomChange = fn;
+}
+
+function noteActivity(room: OnlineRoom, now = Date.now()) {
+  room.lastActivityAt = now;
+  room.updatedAt = now;
+}
+
+function seatDisconnectTotalMs(seat: OnlineSeatState, now: number): number {
+  const banked = seat.disconnectMs ?? 0;
+  if (!seat.disconnectedAt) {
+    return banked;
+  }
+  return banked + Math.max(0, now - seat.disconnectedAt);
+}
+
+function bankSeatDisconnect(seat: OnlineSeatState, now: number): OnlineSeatState {
+  if (!seat.disconnectedAt) {
+    return seat;
+  }
+  return {
+    ...seat,
+    disconnectMs: seatDisconnectTotalMs(seat, now),
+    disconnectedAt: undefined,
+  };
+}
+
+function markSeatDisconnected(seat: OnlineSeatState, now: number): OnlineSeatState {
+  if (seat.disconnectedAt) {
+    return { ...seat, ready: false };
+  }
+  return { ...seat, disconnectedAt: now, ready: false };
+}
+
+function reconnectPaidSeat(seat: OnlineSeatState, socketID: string, now: number): OnlineSeatState {
+  return { ...bankSeatDisconnect(seat, now), socketID, ready: false };
 }
 
 function randomToken(length: number): string {
@@ -185,6 +241,7 @@ export function createOnlineRoom(params: {
     hostSocketID: params.hostSocketID,
     createdAt: now,
     updatedAt: now,
+    lastActivityAt: now,
     buyin,
     matchRound: 0,
     phase: 'lobby',
@@ -259,19 +316,25 @@ function roomToFinishedResult(room: OnlineRoom): NonNullable<OnlineRoomListItem[
   const p2Seat = room.seats.get(PlayerRole.Player2);
   return {
     winnerName:
-      room.postGame.winnerName ||
-      room.snapshot.state.winnerName ||
-      room.snapshot.state.p1Name ||
-      'Winner',
+      room.postGame.outcome === 'abandoned'
+        ? 'Abandoned'
+        : room.postGame.winnerName ||
+          room.snapshot.state.winnerName ||
+          room.snapshot.state.p1Name ||
+          'Winner',
     p1Name: p1Seat?.name ?? room.snapshot.state.p1Name ?? 'Player 1',
     p2Name: p2Seat?.name ?? room.snapshot.state.p2Name ?? 'Player 2',
     p1Score: room.snapshot.state.score?.[0] ?? 0,
     p2Score: room.snapshot.state.score?.[1] ?? 0,
-    netPrize: netPayoutSats(winnerPointsFromSnapshot(room)),
+    netPrize:
+      room.postGame.outcome === 'abandoned' ? 0 : netPayoutSats(winnerPointsFromSnapshot(room)),
     p1Picture: p1Seat?.picture ?? room.postGame.p1Picture,
     p2Picture: p2Seat?.picture ?? room.postGame.p2Picture,
     winnerPicture: room.postGame.winnerPicture,
-    winnerRole: room.postGame.winnerRole,
+    winnerRole: room.postGame.outcome === 'abandoned' ? undefined : room.postGame.winnerRole,
+    outcome: room.postGame.outcome,
+    p1Paid: p1Seat?.paidAmount,
+    p2Paid: p2Seat?.paidAmount,
   };
 }
 
@@ -462,13 +525,7 @@ function tryReclaimPaidSeatOnJoin(
       roomIdBySession.delete(oldSessionID);
       room.spectators.delete(oldSessionID);
     }
-    room.seats.set(role, {
-      ...seat,
-      sessionID,
-      socketID,
-      disconnectedAt: undefined,
-      ready: false,
-    });
+    room.seats.set(role, reconnectPaidSeat({ ...seat, sessionID }, socketID, Date.now()));
     room.spectators.delete(sessionID);
     roomIdBySession.set(sessionID, roomId);
     logOnlineState(
@@ -499,7 +556,7 @@ export function joinRoom(
   let seated = false;
   for (const [role, seat] of room.seats.entries()) {
     if (seat.sessionID === sessionID) {
-      room.seats.set(role, { ...seat, socketID, disconnectedAt: undefined });
+      room.seats.set(role, reconnectPaidSeat(seat, socketID, now));
       room.spectators.delete(sessionID);
       seated = true;
     }
@@ -507,7 +564,7 @@ export function joinRoom(
   if (!seated) {
     tryReclaimPaidSeatOnJoin(room, roomId, sessionID, socketID);
   }
-  room.updatedAt = now;
+  noteActivity(room, now);
   roomIdBySession.set(sessionID, roomId);
   refreshNostrLinkSocket(roomId, sessionID, socketID);
   refreshPendingSeatPaymentSocket(roomId, sessionID, socketID);
@@ -557,14 +614,21 @@ export function leaveRoom(sessionID: string, options?: { releaseSeat?: boolean }
   room.inputBySession.delete(sessionID);
   for (const [role, seat] of room.seats.entries()) {
     if (seat.sessionID === sessionID) {
-      if (releaseSeat || seat.status !== 'paid') {
+      if (seat.status === 'paid' && room.phase !== 'cancelled') {
+        // Paid seats stay reserved. The forfeit clock resumes; it does not reset.
+        const wasGone = seat.disconnectedAt != null;
+        room.seats.set(role, markSeatDisconnected(seat, Date.now()));
+        if (!wasGone) {
+          notifyOnlineRoomChange({ roomId, prev: room.phase, next: room.phase });
+        }
+      } else if (releaseSeat || seat.status !== 'paid') {
         room.seats.set(role, { role, status: 'open' });
       } else {
-        room.seats.set(role, { ...seat, disconnectedAt: Date.now(), ready: false });
+        room.seats.set(role, markSeatDisconnected(seat, Date.now()));
       }
     }
   }
-  room.updatedAt = Date.now();
+  noteActivity(room);
   clearNostrSessionStateOnLeave(sessionID, roomId, { releaseSeat, hasPaidSeat });
   logOnlineState(
     `leave roomId=${roomId} session=${sessionID} releaseSeat=${releaseSeat} hadPaidSeat=${hasPaidSeat}`
@@ -574,7 +638,7 @@ export function leaveRoom(sessionID: string, options?: { releaseSeat?: boolean }
   }
 }
 
-export function deleteRoom(roomId: string) {
+export function deleteRoom(roomId: string, options?: { roomNotFound?: boolean }) {
   const room = roomById.get(roomId);
   if (!room) {
     return;
@@ -629,6 +693,12 @@ export function deleteRoom(roomId: string) {
     }
   }
   logOnlineState(`deleted roomId=${roomId} code=${room.roomCode}`);
+  notifyOnlineRoomChange({
+    roomId,
+    prev: room.phase,
+    next: null,
+    roomNotFound: options?.roomNotFound,
+  });
 }
 
 export function deleteRoomBySession(sessionID: string) {
@@ -651,7 +721,7 @@ export function setRoomNostrMeta(roomId: string, nostrMeta: OnlineRoomNostrMeta,
   room.kind1EventId = kind1EventId;
   room.nostrThreadTipEventId = kind1EventId;
   roomIdByKind1EventId.set(kind1EventId, roomId);
-  room.updatedAt = Date.now();
+  noteActivity(room);
   logOnlineState(`set nostr meta roomId=${roomId} note=${nostrMeta.note1}`);
 }
 
@@ -662,7 +732,7 @@ export function advanceNostrThreadTip(roomId: string, eventId: string) {
     return;
   }
   room.nostrThreadTipEventId = eventId;
-  room.updatedAt = Date.now();
+  noteActivity(room);
   logOnlineState(`nostr thread tip roomId=${roomId} event=${eventId.slice(0, 12)}?`);
 }
 
@@ -1162,7 +1232,7 @@ export function seatPaidPlayer(params: {
     });
   }
   syncAuthoritativePlayers(room.roomId);
-  room.updatedAt = now;
+  noteActivity(room, now);
   logOnlineState(
     `seat assigned roomId=${params.roomId} session=${params.sessionID} role=${openSeat} amount=${params.amount}`
   );
@@ -1187,6 +1257,7 @@ export function setRoomPhase(roomId: string, phase: OnlineRoom['phase']) {
   if (phase === 'playing') {
     room.postGame.doubleOrNothingVotes.clear();
     room.postGame.settledAt = undefined;
+    room.postGame.outcome = undefined;
     for (const [role, seat] of room.seats.entries()) {
       if (seat.status === 'paid') {
         room.seats.set(role, {
@@ -1218,8 +1289,9 @@ export function setRoomPhase(roomId: string, phase: OnlineRoom['phase']) {
       meta: { matchRound: room.matchRound },
     });
   }
-  room.updatedAt = Date.now();
+  noteActivity(room);
   logOnlineState(`phase changed roomId=${roomId} ${prevPhase} -> ${phase}`);
+  notifyOnlineRoomChange({ roomId, prev: prevPhase, next: phase });
 }
 
 export function isPaidSeatSession(roomId: string, sessionID: string) {
@@ -1268,7 +1340,7 @@ export function setSeatReady(roomId: string, sessionID: string, ready: boolean) 
   }
   const seat = room.seats.get(seatRole)!;
   room.seats.set(seatRole, { ...seat, ready, disconnectedAt: undefined });
-  room.updatedAt = Date.now();
+  noteActivity(room);
   return { ok: true as const, started: false };
 }
 
@@ -1282,7 +1354,7 @@ export function markOnlineRoomSettledBySession(sessionID: string) {
     return;
   }
   room.postGame.settledAt = Date.now();
-  room.updatedAt = Date.now();
+  noteActivity(room);
   logOnlineState(`postgame settled roomId=${room.roomId} by session=${sessionID}`);
   const roomId = room.roomId;
   deleteRoom(roomId);
@@ -1309,7 +1381,7 @@ export function updateRoomInput(roomId: string, sessionID: string, payload: Onli
   const prev = room.inputBySession.get(sessionID);
   const input = mergeSessionInput(prev, payload);
   room.inputBySession.set(sessionID, input);
-  room.updatedAt = Date.now();
+  noteActivity(room);
 
   const state = room.snapshot.state;
   if (payload.intent) {
@@ -1342,7 +1414,7 @@ export function confirmOnlineStart(roomId: string, sessionID: string) {
     return { ok: true as const, countdownStarted: Boolean(state.countdownStart) };
   }
   room.seats.set(seatRole, { ...seat, startConfirmed: true, disconnectedAt: undefined });
-  room.updatedAt = Date.now();
+  noteActivity(room);
   const countdownStarted = maybeStartOnlineCountdown(room);
   logOnlineState(
     `arena start confirmed roomId=${roomId} session=${sessionID} countdownStarted=${countdownStarted}`
@@ -1394,34 +1466,41 @@ export function stepRoomSnapshot(roomId: string) {
   if (!room || room.phase !== 'playing') {
     return;
   }
-  const p1 = room.seats.get(PlayerRole.Player1);
-  const p2 = room.seats.get(PlayerRole.Player2);
+  resolveRoomDisconnects(room, Date.now());
+  const live = roomById.get(roomId);
+  if (!live || live.phase !== 'playing') {
+    return;
+  }
+  if (isForfeitPaused(live)) {
+    return;
+  }
+  const p1 = live.seats.get(PlayerRole.Player1);
+  const p2 = live.seats.get(PlayerRole.Player2);
   if (!p1?.sessionID || !p2?.sessionID) {
     return;
   }
 
-  const state = room.snapshot.state;
-  consumePendingTurnsForRoom(room);
-  applyOnlineInputsToState(room);
+  const state = live.snapshot.state;
+  consumePendingTurnsForRoom(live);
+  applyOnlineInputsToState(live);
 
   const respawned = stepOnlineGame(state);
   for (const player of respawned) {
     const sessionID =
       player === 'P1' ? p1.sessionID : player === 'P2' ? p2.sessionID : undefined;
     if (!sessionID) continue;
-    const input = room.inputBySession.get(sessionID);
+    const input = live.inputBySession.get(sessionID);
     if (input) clearSteeringOnRespawn(input);
   }
-  room.snapshot.hud = getOnlineHudState(state);
-  room.snapshot.tick += 1;
+  live.snapshot.hud = getOnlineHudState(state);
+  live.snapshot.tick += 1;
   // Record from mutual arena confirm + countdown onward (skip idle pre-start arena).
   if (shouldRecordOnlineReplay(state)) {
-    pushReplayFrame(room);
+    pushReplayFrame(live);
   }
   if (state.gameEnded) {
     setRoomPhase(roomId, 'postgame');
   }
-  room.updatedAt = Date.now();
 }
 
 /** Compact wire payload; client gunzips + decodes to full frames. */
@@ -1557,6 +1636,7 @@ export function serializeRoom(room: OnlineRoom, viewer?: OnlineRoomViewer) {
     seats: Object.fromEntries(room.seats),
     spectators: [...room.spectators],
     snapshot: room.snapshot,
+    forfeit: getOnlineForfeitStatus(room),
     result:
       room.phase === 'postgame' || room.phase === 'finished'
         ? roomToFinishedResult(room)
@@ -1689,7 +1769,7 @@ export function setOnlinePostGameLnurlw(roomId: string, lnurlw: string) {
   room.postGame.rematchEventId = undefined;
   room.postGame.rematchNote1 = undefined;
   room.postGame.rematchWaitingForSessionID = undefined;
-  room.updatedAt = Date.now();
+  noteActivity(room);
   logOnlineState(`set postgame lnurlw roomId=${roomId}`);
   if (room.phase === 'postgame') {
     setRoomPhase(roomId, 'finished');
@@ -1711,7 +1791,7 @@ export function setOnlinePostGameNostrPayout(roomId: string, lnAddress: string) 
   room.postGame.rematchEventId = undefined;
   room.postGame.rematchNote1 = undefined;
   room.postGame.rematchWaitingForSessionID = undefined;
-  room.updatedAt = Date.now();
+  noteActivity(room);
   logOnlineState(`set postgame nostr payout roomId=${roomId} lnAddress=${lnAddress}`);
   if (room.phase === 'postgame') {
     setRoomPhase(roomId, 'finished');
@@ -1735,7 +1815,7 @@ export function markOnlineRematchPending(params: {
   room.postGame.lnurlw = undefined;
   room.postGame.payoutMethod = undefined;
   room.postGame.payoutTarget = undefined;
-  room.updatedAt = Date.now();
+  noteActivity(room);
   logOnlineState(
     `rematch pending roomId=${params.roomId} amount=${params.requiredAmount} waiting=${params.waitingForSessionID ?? 'none'}`
   );
@@ -1762,7 +1842,7 @@ export function setOnlineRematchRequested(params: {
   room.postGame.payoutMethod = undefined;
   room.postGame.payoutTarget = undefined;
   room.postGame.lnurlw = undefined;
-  room.updatedAt = Date.now();
+  noteActivity(room);
   logOnlineState(
     `rematch requested roomId=${params.roomId} amount=${params.requiredAmount} event=${params.rematchEventId}`
   );
@@ -1851,6 +1931,7 @@ export function settleOnlineRematchPayment(params: {
     ready: false,
     startConfirmed: false,
     disconnectedAt: undefined,
+    disconnectMs: 0,
   });
   room.seats.set(loserRole, {
     ...loserSeat,
@@ -1858,9 +1939,10 @@ export function settleOnlineRematchPayment(params: {
     ready: false,
     startConfirmed: false,
     disconnectedAt: undefined,
+    disconnectMs: 0,
   });
   resetRoomToLobby(room);
-  room.updatedAt = Date.now();
+  noteActivity(room);
   logOnlineState(`rematch paid roomId=${params.roomId} amount=${requiredAmount}`);
   const matchStarted = maybeStartPaidMatch(room);
   return { ok: true as const, room, requiredAmount, matchStarted };
@@ -1885,7 +1967,7 @@ export function voteOnlineDoubleOrNothing(roomId: string, sessionID: string) {
     return { ok: false as const, reason: 'not_player' };
   }
   room.postGame.doubleOrNothingVotes.add(sessionID);
-  room.updatedAt = Date.now();
+  noteActivity(room);
   const agreed =
     p1?.sessionID != null &&
     p2?.sessionID != null &&
@@ -1917,8 +1999,7 @@ function syncAuthoritativePlayers(roomId: string) {
   room.snapshot.hud = getOnlineHudState(state);
 }
 
-function cleanupExpiredState() {
-  const now = Date.now();
+export function runOnlineRoomCleanup(now = Date.now()) {
   for (const [key, record] of pinByValue.entries()) {
     if (
       (record.expiresAt <= now && !shouldPinStayActive(record)) ||
@@ -1939,9 +2020,8 @@ function cleanupExpiredState() {
       nostrLinkByRoomPubkey.delete(key);
     }
   }
-  for (const room of roomById.values()) {
-    releaseExpiredPaidSeats(room, now);
-
+  resolveOnlineDisconnects(now);
+  for (const room of [...roomById.values()]) {
     if (room.postGame.settledAt && now - room.postGame.settledAt > SETTLED_ROOM_DELETE_FALLBACK_MS) {
       logOnlineState(
         `cleanup settled room fallback roomId=${room.roomId} settledMs=${now - room.postGame.settledAt}`
@@ -1951,14 +2031,16 @@ function cleanupExpiredState() {
     }
 
     if (shouldDeleteIdleRoom(room, now)) {
-      logOnlineState(`cleanup idle room roomId=${room.roomId} inactiveMs=${now - room.updatedAt}`);
+      logOnlineState(
+        `cleanup idle room roomId=${room.roomId} inactiveMs=${now - (room.lastActivityAt ?? room.createdAt)}`
+      );
       deleteRoom(room.roomId);
     }
   }
 }
 
 setInterval(() => {
-  cleanupExpiredState();
+  runOnlineRoomCleanup();
 }, ROOM_CLEANUP_MS);
 
 function shouldPinStayActive(record: JoinPinRecord) {
@@ -1976,49 +2058,270 @@ function pinRecordKey(roomId: string, pin: string) {
 }
 
 function shouldDeleteIdleRoom(room: OnlineRoom, now: number) {
-  const inactiveFor = now - room.updatedAt;
+  const inactiveFor = now - (room.lastActivityAt ?? room.createdAt);
   if (inactiveFor <= ROOM_IDLE_TTL_MS) {
+    return false;
+  }
+  if (room.phase === 'playing' || room.phase === 'postgame') {
     return false;
   }
   const hasPaidSeat = [...room.seats.values()].some((seat) => seat.status === 'paid');
   if (hasPaidSeat) {
     return false;
   }
-  if (room.members.size > 0) {
+  if (blockingMemberCount(room) > 0) {
     return false;
   }
   return true;
 }
 
-function releaseExpiredPaidSeats(room: OnlineRoom, now: number) {
-  let released = false;
-  for (const [role, seat] of room.seats.entries()) {
-    if (
-      seat.status === 'paid' &&
-      seat.disconnectedAt &&
-      now - seat.disconnectedAt > SEAT_DISCONNECT_TTL_MS
-    ) {
-      if (seat.sessionID) {
-        roomIdBySession.delete(seat.sessionID);
-      }
-      room.seats.set(role, { role, status: 'open' });
-      room.inputBySession.delete(seat.sessionID ?? '');
-      released = true;
-      logOnlineState(
-        `released stale paid seat roomId=${room.roomId} role=${role} offlineMs=${now - seat.disconnectedAt}`
-      );
+function blockingMemberCount(room: OnlineRoom): number {
+  let count = 0;
+  for (const sessionID of room.members.keys()) {
+    if (getSocketFromID(sessionID)) {
+      count += 1;
     }
   }
-  if (released) {
-    room.phase = 'lobby';
-    room.snapshot.phase = 'lobby';
-    room.postGame.doubleOrNothingVotes.clear();
-    room.postGame.settledAt = undefined;
-    room.updatedAt = now;
+  return count;
+}
+
+function isForfeitPaused(room: OnlineRoom): boolean {
+  if (room.phase !== 'playing' && room.phase !== 'lobby') {
+    return false;
+  }
+  const seats = [...room.seats.values()];
+  const paid = seats.filter((seat) => seat.status === 'paid');
+  if (paid.length < 2) {
+    return false;
+  }
+  return paid.some((seat) => seat.disconnectedAt != null);
+}
+
+function forfeitRemainingMs(seat: OnlineSeatState, now: number): number | undefined {
+  if (!seat.disconnectedAt) {
+    return undefined;
+  }
+  return Math.max(0, ONLINE_FORFEIT_DISCONNECT_MS - seatDisconnectTotalMs(seat, now));
+}
+
+export function getOnlineForfeitStatus(room: OnlineRoom, now = Date.now()): OnlineForfeitPause | undefined {
+  if (room.phase === 'postgame' || room.phase === 'finished' || room.phase === 'cancelled') {
+    return undefined;
+  }
+  const p1 = room.seats.get(PlayerRole.Player1);
+  const p2 = room.seats.get(PlayerRole.Player2);
+  const p1RemainingMs = p1?.status === 'paid' ? forfeitRemainingMs(p1, now) : undefined;
+  const p2RemainingMs = p2?.status === 'paid' ? forfeitRemainingMs(p2, now) : undefined;
+  if (p1RemainingMs == null && p2RemainingMs == null) {
+    return undefined;
+  }
+  return {
+    paused: true,
+    limitMs: ONLINE_FORFEIT_DISCONNECT_MS,
+    p1RemainingMs,
+    p2RemainingMs,
+  };
+}
+
+/** Mark paid seats whose socket is gone, then apply the forfeit clock. */
+export function syncOnlineSeatSockets(
+  isConnected: (socketID: string) => boolean,
+  now = Date.now()
+) {
+  for (const room of [...roomById.values()]) {
+    if (room.phase === 'finished' || room.phase === 'cancelled') {
+      continue;
+    }
+    let newlyGone = false;
+    for (const [role, seat] of room.seats.entries()) {
+      if (seat.status !== 'paid' || !seat.sessionID) {
+        continue;
+      }
+      const connected = Boolean(seat.socketID && isConnected(seat.socketID));
+      if (connected || seat.disconnectedAt) {
+        continue;
+      }
+      room.seats.set(role, markSeatDisconnected(seat, now));
+      room.members.delete(seat.sessionID);
+      room.spectators.delete(seat.sessionID);
+      room.inputBySession.delete(seat.sessionID);
+      newlyGone = true;
+      logOnlineState(
+        `seat socket gone roomId=${room.roomId} role=${role} session=${seat.sessionID}`
+      );
+    }
+    if (newlyGone) {
+      notifyOnlineRoomChange({ roomId: room.roomId, prev: room.phase, next: room.phase });
+    }
+    resolveRoomDisconnects(room, now);
   }
 }
 
+export function resolveOnlineDisconnects(now = Date.now()) {
+  for (const room of [...roomById.values()]) {
+    if (!roomById.has(room.roomId)) {
+      continue;
+    }
+    resolveRoomDisconnects(room, now);
+  }
+}
+
+function seatForfeitDue(seat: OnlineSeatState | undefined, now: number): boolean {
+  return Boolean(
+    seat &&
+      seat.status === 'paid' &&
+      seat.disconnectedAt &&
+      seatDisconnectTotalMs(seat, now) >= ONLINE_FORFEIT_DISCONNECT_MS
+  );
+}
+
+function resolveRoomDisconnects(room: OnlineRoom, now: number) {
+  if (room.phase === 'postgame' || room.phase === 'finished' || room.phase === 'cancelled') {
+    return;
+  }
+  const p1 = room.seats.get(PlayerRole.Player1);
+  const p2 = room.seats.get(PlayerRole.Player2);
+  if (!p1 || !p2) {
+    return;
+  }
+  const bothPaid = p1.status === 'paid' && p2.status === 'paid';
+  if (bothPaid) {
+    const p1Due = seatForfeitDue(p1, now);
+    const p2Due = seatForfeitDue(p2, now);
+    if (!p1Due && !p2Due) {
+      return;
+    }
+    const p1Here = !p1.disconnectedAt;
+    const p2Here = !p2.disconnectedAt;
+    if ((p1Due && p2Due) || (p1Due && !p2Here) || (p2Due && !p1Here)) {
+      abandonPaidMatch(room, 'both_disconnected');
+      return;
+    }
+    if (p2Due && p1Here) {
+      awardDisconnectForfeit(room, PlayerRole.Player1);
+      return;
+    }
+    if (p1Due && p2Here) {
+      awardDisconnectForfeit(room, PlayerRole.Player2);
+    }
+    return;
+  }
+  if (room.phase !== 'lobby') {
+    return;
+  }
+  for (const [role, seat] of room.seats.entries()) {
+    if (seatForfeitDue(seat, now)) {
+      abandonLobbySeat(room, role, seat);
+      return;
+    }
+  }
+}
+
+function awardDisconnectForfeit(room: OnlineRoom, winnerRole: PlayerRole.Player1 | PlayerRole.Player2) {
+  const p1 = room.seats.get(PlayerRole.Player1);
+  const p2 = room.seats.get(PlayerRole.Player2);
+  const total = Math.floor((p1?.paidAmount ?? 0) + (p2?.paidAmount ?? 0));
+  const state = room.snapshot.state;
+  const pot = total > 0 ? total : state.totalPoints;
+  state.totalPoints = pot;
+  state.gameEnded = true;
+  state.countdownStart = false;
+  if (winnerRole === PlayerRole.Player2) {
+    state.winnerPlayer = 'P2';
+    state.winnerName = p2?.name ?? state.p2Name;
+    state.score = [0, pot];
+  } else {
+    state.winnerPlayer = 'P1';
+    state.winnerName = p1?.name ?? state.p1Name;
+    state.score = [pot, 0];
+  }
+  room.snapshot.hud = getOnlineHudState(state);
+  room.postGame.outcome = 'forfeit';
+  if (room.matchRound < 1) {
+    room.matchRound = 1;
+  }
+  logOnlineState(
+    `forfeit roomId=${room.roomId} winner=${winnerRole === PlayerRole.Player2 ? 'P2' : 'P1'} pot=${pot}`
+  );
+  trackOnlineOk('online.match.forfeit', {
+    roomId: room.roomId,
+    roomCode: room.roomCode,
+    buyin: room.buyin,
+    amountSats: pot,
+    meta: { winner: winnerRole === PlayerRole.Player2 ? 'P2' : 'P1' },
+  });
+  setRoomPhase(room.roomId, 'postgame');
+}
+
+function abandonPaidMatch(room: OnlineRoom, reason: string) {
+  const p1Paid = Math.floor(room.seats.get(PlayerRole.Player1)?.paidAmount ?? 0);
+  const p2Paid = Math.floor(room.seats.get(PlayerRole.Player2)?.paidAmount ?? 0);
+  room.postGame.outcome = 'abandoned';
+  room.postGame.winnerRole = undefined;
+  room.postGame.winnerSessionID = undefined;
+  room.postGame.winnerName = 'Abandoned';
+  room.postGame.winnerPoints = 0;
+  room.postGame.totalPrize = 0;
+  room.postGame.settledAt = Date.now();
+  room.snapshot.state.gameEnded = true;
+  room.snapshot.state.countdownStart = false;
+  room.snapshot.state.winnerPlayer = null;
+  room.snapshot.state.winnerName = '';
+  if (room.matchRound < 1) {
+    room.matchRound = 1;
+  }
+  logOnlineState(
+    `abandoned roomId=${room.roomId} reason=${reason} p1Paid=${p1Paid} p2Paid=${p2Paid}`
+  );
+  trackOnlineOk('online.room.abandoned', {
+    roomId: room.roomId,
+    roomCode: room.roomCode,
+    buyin: room.buyin,
+    amountSats: p1Paid + p2Paid,
+    meta: { reason, p1Paid, p2Paid },
+  });
+  const prevPhase = room.phase;
+  room.phase = 'finished';
+  room.snapshot.phase = 'finished';
+  logOnlineState(`phase changed roomId=${room.roomId} ${prevPhase} -> finished`);
+  const matchRound = room.matchRound;
+  void appendOnlineMatchArchive({
+    version: 1,
+    kind: 'match',
+    roomId: room.roomId,
+    matchRound,
+    archiveId: `${room.roomId}-r${matchRound}`,
+    finishedAt: Date.now(),
+    serializedRoom: serializeRoom(room) as Record<string, unknown>,
+    replay: packReplayForArchive([...room.replay.frames], room.replay.tickMs, room.replay.blockEvents),
+  });
+  deleteRoom(room.roomId, { roomNotFound: true });
+}
+
+function abandonLobbySeat(
+  room: OnlineRoom,
+  role: PlayerRole.Player1 | PlayerRole.Player2,
+  seat: OnlineSeatState
+) {
+  const paid = Math.floor(seat.paidAmount ?? 0);
+  logOnlineState(
+    `abandoned lobby seat roomId=${room.roomId} role=${role} paid=${paid}`
+  );
+  trackOnlineOk('online.room.abandoned', {
+    roomId: room.roomId,
+    roomCode: room.roomCode,
+    buyin: room.buyin,
+    sessionID: seat.sessionID,
+    amountSats: paid,
+    meta: { reason: 'lobby_seat', role: role === PlayerRole.Player2 ? 'p2' : 'p1', paid },
+  });
+  deleteRoom(room.roomId, { roomNotFound: true });
+}
+
 function ensurePostGameState(room: OnlineRoom) {
+  if (room.postGame.outcome === 'abandoned') {
+    return;
+  }
   const p1 = room.seats.get(PlayerRole.Player1);
   const p2 = room.seats.get(PlayerRole.Player2);
   const winnerRole =
@@ -2086,7 +2389,8 @@ function resetRoomToLobby(room: OnlineRoom) {
   room.postGame.winnerPicture = undefined;
   room.postGame.winnerPoints = 0;
   room.postGame.totalPrize = 0;
-  room.updatedAt = Date.now();
+  room.postGame.outcome = undefined;
+  noteActivity(room);
   logOnlineState(`double-or-nothing agreed; reset to lobby roomId=${room.roomId}`);
 }
 

@@ -65,6 +65,7 @@ import {
   extendNostrLinkExpiry,
   getActiveNostrLinkPubkey,
   getLightningNostrLinkPubkey,
+  getOnlineForfeitStatus,
   getRoomById,
   getRoomBySession,
   hasAnyPaidSeat,
@@ -86,6 +87,7 @@ import {
   redactSerializedRoomForViewer,
   markOnlineRematchPending,
   serializeRoom,
+  setOnlineRoomChangeNotifier,
   setSeatReady,
   setRoomNostrMeta,
   setRoomPhase,
@@ -93,6 +95,7 @@ import {
   setOnlinePostGameNostrPayout,
   setOnlineRematchRequested,
   stepRoomSnapshot,
+  syncOnlineSeatSockets,
   updateRoomInput,
   voteOnlineDoubleOrNothing,
 } from '../state/onlineRoomState';
@@ -1610,26 +1613,48 @@ function bolt11ExpiresAtMs(pr: string): number | undefined {
 }
 
 export function startOnlineLoop() {
+  setOnlineRoomChangeNotifier(({ roomId, prev, next, roomNotFound }) => {
+    const live = getRoomById(roomId);
+    if (live && prev === 'playing' && next === 'postgame') {
+      publishOnlineMatchResult(live);
+    }
+    if (live) {
+      io.to(roomId).emit('onlineRoomUpdated', serializeRoom(live));
+    } else if (roomNotFound) {
+      io.to(roomId).emit('onlinePinInvalid', { reason: 'room_not_found' });
+    }
+    broadcastOnlineRoomLists();
+  });
   setInterval(() => {
+    syncOnlineSeatSockets((socketID) => {
+      const sock = io.sockets.sockets.get(socketID);
+      return Boolean(sock?.connected);
+    });
     const rooms = listOnlineRooms();
     for (const room of rooms) {
-      if (room.phase !== 'playing') {
-        continue;
-      }
-      stepRoomSnapshot(room.roomId);
-      const live = getRoomById(room.roomId);
-      if (live) {
+      if (room.phase === 'playing') {
+        stepRoomSnapshot(room.roomId);
+        const live = getRoomById(room.roomId);
+        if (!live || live.phase !== 'playing') {
+          continue;
+        }
+        const forfeit = getOnlineForfeitStatus(live);
         io.to(room.roomId).emit('onlineRoomSnapshot', {
           roomId: live.roomId,
           snapshot: pruneOnlineSnapshotForWire(live.snapshot),
+          ...(forfeit ? { forfeit } : {}),
         });
-        if (live.phase !== room.phase) {
-          if (room.phase === 'playing' && live.phase === 'postgame') {
-            publishOnlineMatchResult(live);
-          }
-          broadcastOnlineRoomLists();
-        }
+        continue;
       }
+      const live = getRoomById(room.roomId);
+      if (!live) {
+        continue;
+      }
+      const clock = live.phase === 'lobby' ? getOnlineForfeitStatus(live) : undefined;
+      if (!clock) {
+        continue;
+      }
+      io.to(live.roomId).emit('onlineRoomUpdated', serializeRoom(live));
     }
   }, ONLINE_TICK_MS);
 }

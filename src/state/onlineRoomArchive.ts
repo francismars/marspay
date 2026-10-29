@@ -63,6 +63,9 @@ export interface OnlineArchivedListItem {
     p2Picture?: string;
     winnerPicture?: string;
     winnerRole?: PlayerRole.Player1 | PlayerRole.Player2;
+    outcome?: 'forfeit' | 'abandoned';
+    p1Paid?: number;
+    p2Paid?: number;
   };
 }
 

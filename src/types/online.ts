@@ -19,7 +19,10 @@ export interface OnlineSeatState {
   paidAmount?: number;
   paidAt?: number;
   ready?: boolean;
+  /** Set while this paid seat's socket is gone. Cleared on reconnect. */
   disconnectedAt?: number;
+  /** Ms already spent disconnected this match. The open disconnect is added on top. */
+  disconnectMs?: number;
   name?: string;
   picture?: string;
   pubkey?: string;
@@ -61,6 +64,8 @@ export interface OnlineRoom {
   hostSocketID: string;
   createdAt: number;
   updatedAt: number;
+  /** Last join, input, payment, or other real activity. Sim ticks do not move this. */
+  lastActivityAt: number;
   buyin: number;
   /** Incremented each time lobby → playing (match 1, 2, … for DoN rematches). */
   matchRound: number;
@@ -101,7 +106,17 @@ export interface OnlineRoom {
     rematchWaitingForSessionID?: string;
     settledAt?: number;
     doubleOrNothingVotes: Set<string>;
+    /** `abandoned` keeps the pot in the house and must not open a winner withdrawal. */
+    outcome?: 'forfeit' | 'abandoned';
   };
+}
+
+/** Shown while a paid seat is disconnected. Remaining time accumulates across reconnects. */
+export interface OnlineForfeitPause {
+  paused: boolean;
+  limitMs: number;
+  p1RemainingMs?: number;
+  p2RemainingMs?: number;
 }
 
 /** One completed sim in a room (match 1, 2, … for double-or-nothing sessions). */
@@ -149,6 +164,10 @@ export interface OnlineRoomListItem {
     p2Picture?: string;
     winnerPicture?: string;
     winnerRole?: PlayerRole.Player1 | PlayerRole.Player2;
+    /** Absent on a normal score finish. */
+    outcome?: 'forfeit' | 'abandoned';
+    p1Paid?: number;
+    p2Paid?: number;
   };
   replay?: {
     available: boolean;

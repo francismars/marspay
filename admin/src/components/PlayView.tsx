@@ -42,7 +42,12 @@ function matchSummary(row: OnlineHistoryRow): string {
     row.replay?.durationMs && row.replay.durationMs > 0
       ? ` · ${Math.round(row.replay.durationMs / 1000)}s`
       : '';
-  return `${result.winnerName} won ${result.p1Score}–${result.p2Score} · ${result.netPrize.toLocaleString()} sats net${duration}`;
+  if (result.outcome === 'abandoned') {
+    const kept = (result.p1Paid ?? 0) + (result.p2Paid ?? 0);
+    return `Abandoned · ${kept.toLocaleString()} sats kept${duration}`;
+  }
+  const via = result.outcome === 'forfeit' ? ' by forfeit' : '';
+  return `${result.winnerName} won${via} ${result.p1Score}–${result.p2Score} · ${result.netPrize.toLocaleString()} sats net${duration}`;
 }
 
 function sortedCounts(record: Record<string, number> | undefined): Array<{ label: string; count: number }> {

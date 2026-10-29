@@ -199,6 +199,7 @@ export type OnlineSeat = {
   npub?: string;
   ready?: boolean;
   pingMs?: number;
+  forfeitRemainingMs?: number;
 };
 
 export type OnlineRoomLive = {
@@ -214,6 +215,12 @@ export type OnlineRoomLive = {
   result?: Record<string, unknown>;
   replay?: { available?: boolean };
   seats: OnlineSeat[];
+  forfeit?: {
+    paused: boolean;
+    limitMs: number;
+    p1RemainingMs?: number;
+    p2RemainingMs?: number;
+  };
   lobbyUrl: string;
   gameUrl?: string;
 };
@@ -277,6 +284,9 @@ export type OnlineMatchResult = {
   p1Score: number;
   p2Score: number;
   netPrize: number;
+  outcome?: 'forfeit' | 'abandoned';
+  p1Paid?: number;
+  p2Paid?: number;
 };
 
 export type OnlineHistoryRow = {

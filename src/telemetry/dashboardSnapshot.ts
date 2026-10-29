@@ -8,10 +8,12 @@ import {
 } from '../state/challengeState';
 import { loadDailySpendSync } from '../state/challengeClaimStore';
 import {
+  getOnlineForfeitStatus,
   getRoomById,
   getRoomBySession,
   listOnlineRooms,
   listOnlineHistoryMerged,
+  ONLINE_FORFEIT_DISCONNECT_MS,
 } from '../state/onlineRoomState';
 import { onlineRoomPublicUrl, onlineRoomPublicUrlFromRoomId } from '../consts/gamePublicUrl';
 import {
@@ -420,6 +422,13 @@ function serializeSeat(seat: OnlineSeatState) {
     npub: seat.pubkey ? nip19.npubEncode(seat.pubkey) : undefined,
     ready: seat.ready,
     pingMs: seat.pingMs,
+    forfeitRemainingMs: seat.disconnectedAt
+      ? Math.max(
+          0,
+          ONLINE_FORFEIT_DISCONNECT_MS -
+            ((seat.disconnectMs ?? 0) + (Date.now() - seat.disconnectedAt))
+        )
+      : undefined,
   };
 }
 
@@ -443,6 +452,7 @@ export function buildOnlineSnapshot() {
       result: room.result,
       replay: room.replay,
       seats,
+      forfeit: full ? getOnlineForfeitStatus(full) : undefined,
       roomUrl: onlineRoomPublicUrl(room.roomCode),
     };
   });

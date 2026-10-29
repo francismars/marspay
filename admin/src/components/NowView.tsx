@@ -20,13 +20,24 @@ function doing(ctx: LiveData['sessions'][0]['context']): string {
   return 'Connected, not in a match';
 }
 
+function formatForfeit(ms: number): string {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+}
+
 function seatLine(seat: OnlineRoomLive['seats'][0]): { text: string; slow: boolean } {
   if (!seat.sessionID && seat.status === 'open') return { text: 'Open seat', slow: false };
   const name = seat.name || 'Player';
   const ready = seat.ready ? 'ready' : seat.status;
   const slow = typeof seat.pingMs === 'number' && seat.pingMs >= 200;
   const ping = typeof seat.pingMs === 'number' ? ` · ${seat.pingMs} ms` : '';
-  return { text: `${name} · ${ready}${ping}`, slow };
+  const forfeit =
+    typeof seat.forfeitRemainingMs === 'number'
+      ? ` · disconnected ${formatForfeit(seat.forfeitRemainingMs)}`
+      : '';
+  return { text: `${name} · ${ready}${ping}${forfeit}`, slow };
 }
 
 export function NowView({
@@ -101,6 +112,7 @@ export function NowView({
                   {room.buyin.toLocaleString()} sats buy-in · {room.seatsPaid}/{room.seatsTotal} paid
                   {room.spectators > 0 ? ` · ${room.spectators} watching` : ''} · opened{' '}
                   {formatAge(room.ageMs)} ago
+                  {room.forfeit?.paused ? ' · paused' : ''}
                 </p>
                 <ul className="mt-3 space-y-1 text-sm text-zinc-300">
                   {room.seats.map((seat) => {

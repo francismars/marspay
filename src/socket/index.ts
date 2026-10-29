@@ -47,6 +47,8 @@ import {
   reportOnlineRoomPingHandler,
 } from './onlineRoom';
 import { leaveRoom } from '../state/onlineRoomState';
+import { setSessionConnectedChecker } from '../state/cleanupState';
+import { getSocketFromID } from '../state/sessionState';
 import {
   clearAppNostrSessionHandler,
   confirmAppNostrLinkHandler,
@@ -84,6 +86,14 @@ function guardSocketAsync<T extends unknown[]>(
 }
 
 export default function registerSocketHandlers(io: Server) {
+  setSessionConnectedChecker((sessionID) => {
+    const session = getSocketFromID(sessionID);
+    if (!session) {
+      return false;
+    }
+    const sock = io.sockets.sockets.get(session.socketID);
+    return Boolean(sock?.connected);
+  });
   io.use((socket: Socket, next) => {
     void middleware(io, socket, next).catch(next);
   });

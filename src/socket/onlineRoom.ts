@@ -65,6 +65,9 @@ import {
   extendNostrLinkExpiry,
   getActiveNostrLinkPubkey,
   getLightningNostrLinkPubkey,
+  completeOnlineClaimPayout,
+  failOnlineClaimPayout,
+  getOnlineClaimStatus,
   getOnlineForfeitStatus,
   getRoomById,
   getRoomBySession,
@@ -96,6 +99,7 @@ import {
   setOnlineRematchRequested,
   stepRoomSnapshot,
   syncOnlineSeatSockets,
+  takeDueClaimPayouts,
   updateRoomInput,
   voteOnlineDoubleOrNothing,
 } from '../state/onlineRoomState';
@@ -1630,6 +1634,9 @@ export function startOnlineLoop() {
       const sock = io.sockets.sockets.get(socketID);
       return Boolean(sock?.connected);
     });
+    for (const job of takeDueClaimPayouts()) {
+      void payClaimClock(job);
+    }
     const rooms = listOnlineRooms();
     for (const room of rooms) {
       if (room.phase === 'playing') {
@@ -1650,13 +1657,56 @@ export function startOnlineLoop() {
       if (!live) {
         continue;
       }
-      const clock = live.phase === 'lobby' ? getOnlineForfeitStatus(live) : undefined;
+      const clock =
+        live.phase === 'lobby' ? getOnlineForfeitStatus(live) : getOnlineClaimStatus(live);
       if (!clock) {
         continue;
       }
       io.to(live.roomId).emit('onlineRoomUpdated', serializeRoom(live));
     }
   }, ONLINE_TICK_MS);
+}
+
+async function payClaimClock(job: {
+  roomId: string;
+  lnAddress: string;
+  amountSats: number;
+  winnerSessionID?: string;
+}) {
+  try {
+    await payLnAddress(job.lnAddress, job.amountSats);
+  } catch (error) {
+    logOnline(
+      job.winnerSessionID,
+      `claim payout failed roomId=${job.roomId} ln=${job.lnAddress} error=${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+    failOnlineClaimPayout(job.roomId);
+    return;
+  }
+  completeOnlineClaimPayout(job.roomId, job.lnAddress);
+  logOnline(
+    job.winnerSessionID,
+    `claim payout success roomId=${job.roomId} amount=${job.amountSats} ln=${job.lnAddress}`
+  );
+  trackOnlineOk('online.payout.nostr', {
+    sessionID: job.winnerSessionID,
+    roomId: job.roomId,
+    amountSats: job.amountSats,
+    meta: { claim: true },
+  });
+  const liveRoom = getRoomById(job.roomId);
+  if (liveRoom) {
+    io.to(liveRoom.roomId).emit('onlineRoomUpdated', serializeRoom(liveRoom));
+    void publishOnlineThreadReply(
+      liveRoom,
+      job.winnerSessionID ?? liveRoom.hostSessionID,
+      `ONLINE ROUND CLOSED · room ${liveRoom.roomCode}\nWinner payout sent.\nRound closed.`,
+      getSeatMentions(liveRoom.roomId)
+    );
+  }
+  broadcastOnlineRoomLists();
 }
 
 async function payLnAddress(lnAddress: string, satsAmount: number) {

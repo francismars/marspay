@@ -108,6 +108,11 @@ export interface OnlineRoom {
     doubleOrNothingVotes: Set<string>;
     /** `abandoned` keeps the pot in the house and must not open a winner withdrawal. */
     outcome?: 'forfeit' | 'abandoned';
+    /** Ms the winner has already been disconnected during postgame. Match disconnect time is not included. */
+    claimBankMs?: number;
+    /** A claim-expiry payout is in flight or waiting out a retry. */
+    claimPayoutPending?: boolean;
+    claimPayoutAttemptAt?: number;
   };
 }
 
@@ -117,6 +122,12 @@ export interface OnlineForfeitPause {
   limitMs: number;
   p1RemainingMs?: number;
   p2RemainingMs?: number;
+}
+
+/** Winner must claim before this runs out. Only present during postgame while that seat is disconnected. */
+export interface OnlineClaimClock {
+  remainingMs: number;
+  limitMs: number;
 }
 
 /** One completed sim in a room (match 1, 2, … for double-or-nothing sessions). */

@@ -7,8 +7,10 @@ import { cleanupInactiveSessions } from './cleanupState';
 import { appendOnlineMatchArchive } from './onlineRoomArchive';
 import {
   ONLINE_FORFEIT_DISCONNECT_MS,
+  completeOnlineClaimPayout,
   confirmOnlineStart,
   createOnlineRoom,
+  getOnlineClaimStatus,
   getOnlineForfeitStatus,
   getRoomById,
   joinRoom,
@@ -18,6 +20,7 @@ import {
   seatPaidPlayer,
   serializeRoom,
   stepRoomSnapshot,
+  takeDueClaimPayouts,
 } from './onlineRoomState';
 
 vi.mock('../telemetry/onlineTelemetry', () => ({
@@ -38,6 +41,7 @@ vi.mock('./onlineRoomArchive', async () => {
 afterEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
+  takeDueClaimPayouts();
 });
 
 function paidMatch(label: string) {
@@ -261,6 +265,86 @@ describe('online disconnect forfeit', () => {
 });
 
 const ROOM_IDLE_AFTER = 20 * 60 * 1000 + 5;
+
+describe('prize claim clock', () => {
+  function finishedMatch(label: string, lnAddress?: string) {
+    const { room, host, guest } = paidMatch(label);
+    if (lnAddress) {
+      room.seats.get(PlayerRole.Player1)!.lnAddress = lnAddress;
+    }
+    room.snapshot.state.gameStarted = true;
+    room.snapshot.state.gameEnded = true;
+    room.snapshot.state.winnerPlayer = 'P1';
+    room.snapshot.state.winnerName = 'Ada';
+    room.snapshot.state.score = [2000, 0];
+    stepRoomSnapshot(room.roomId);
+    return { room: getRoomById(room.roomId)!, host, guest };
+  }
+
+  it('omits the match clock after the result and starts the claim clock only for the winner', () => {
+    const { room, host, guest } = finishedMatch('claim-show');
+    leaveRoom(guest);
+    expect(getOnlineForfeitStatus(getRoomById(room.roomId)!)).toBeUndefined();
+    expect(getOnlineClaimStatus(getRoomById(room.roomId)!)).toBeUndefined();
+    expect(getRoomById(room.roomId)!.phase).toBe('postgame');
+
+    leaveRoom(host);
+    const claim = getOnlineClaimStatus(getRoomById(room.roomId)!);
+    expect(claim?.limitMs).toBe(ONLINE_FORFEIT_DISCONNECT_MS);
+    expect(claim?.remainingMs).toBeGreaterThan(ONLINE_FORFEIT_DISCONNECT_MS - 1000);
+    expect(serializeRoom(getRoomById(room.roomId)!).forfeit).toBeUndefined();
+    expect(serializeRoom(getRoomById(room.roomId)!).claim?.remainingMs).toBe(claim?.remainingMs);
+  });
+
+  it('deletes the room when the winner never returns and has no Lightning address', () => {
+    const { room, host } = finishedMatch('claim-drop');
+    leaveRoom(host);
+    const goneAt = seat(room.roomId, PlayerRole.Player1).disconnectedAt!;
+    resolveOnlineDisconnects(goneAt + ONLINE_FORFEIT_DISCONNECT_MS - 1);
+    expect(getRoomById(room.roomId)?.phase).toBe('postgame');
+    resolveOnlineDisconnects(goneAt + ONLINE_FORFEIT_DISCONNECT_MS);
+    expect(getRoomById(room.roomId)).toBeUndefined();
+    expect(takeDueClaimPayouts()).toEqual([]);
+  });
+
+  it('pays the winner Lightning address when the claim clock hits zero', () => {
+    const { room, host } = finishedMatch('claim-pay', 'ada@pay.example');
+    leaveRoom(host);
+    const goneAt = seat(room.roomId, PlayerRole.Player1).disconnectedAt!;
+    resolveOnlineDisconnects(goneAt + ONLINE_FORFEIT_DISCONNECT_MS);
+    const jobs = takeDueClaimPayouts();
+    expect(jobs).toEqual([
+      expect.objectContaining({
+        roomId: room.roomId,
+        lnAddress: 'ada@pay.example',
+        amountSats: 1900,
+      }),
+    ]);
+    expect(getRoomById(room.roomId)?.phase).toBe('postgame');
+    completeOnlineClaimPayout(room.roomId, 'ada@pay.example');
+    const live = getRoomById(room.roomId)!;
+    expect(live.phase).toBe('finished');
+    expect(live.postGame.payoutMethod).toBe('nostr_zap');
+    expect(live.postGame.payoutTarget).toBe('ada@pay.example');
+    expect(getOnlineClaimStatus(live)).toBeUndefined();
+  });
+
+  it('pauses the claim bank when the winner reconnects', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const start = new Date('2026-10-29T18:00:00Z');
+    vi.setSystemTime(start);
+    const { room, host } = finishedMatch('claim-bank');
+    leaveRoom(host);
+    vi.setSystemTime(start.getTime() + 60 * 1000);
+    joinRoom(room.roomId, host, `${host}-sock`);
+    const back = getRoomById(room.roomId)!;
+    expect(getOnlineClaimStatus(back)).toBeUndefined();
+    expect(back.postGame.claimBankMs).toBe(60 * 1000);
+    leaveRoom(host);
+    const claim = getOnlineClaimStatus(getRoomById(room.roomId)!, start.getTime() + 60 * 1000);
+    expect(claim?.remainingMs).toBe(ONLINE_FORFEIT_DISCONNECT_MS - 60 * 1000);
+  });
+});
 
 describe('session cleanup leaves paid seats', () => {
   it('marks the seat disconnected and drops the member when the session is removed', () => {

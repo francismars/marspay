@@ -32,17 +32,34 @@ import { broadcastOnlineRoomLists } from '../socket/onlineRoom';
 import { io } from '../server';
 import withdrawnLNURL from './withdrawnLNURL';
 
+const LNBITS_IP = '203.0.113.5';
+
 const app = express();
 app.use(express.json());
 app.use('/api/LNURL/withdrawn', withdrawnLNURL);
 
 beforeEach(() => {
+  process.env.LNBITS_IP = LNBITS_IP;
   emit.mockClear();
   vi.mocked(io.to).mockClear();
   vi.mocked(broadcastOnlineRoomLists).mockClear();
 });
 
 describe('withdrawn LNURL webhook', () => {
+  it('rejects a caller that is not LNbits and leaves the game in place', async () => {
+    const sessionID = 'withdraw-wrong-ip';
+    seedGame(sessionID, GameMode.P2P);
+    seedWithdraw(sessionID, 'lnurlw-wrong-ip');
+
+    const res = await post('/api/LNURL/withdrawn', { lnurlw: 'lnurlw-wrong-ip' }, '198.51.100.1');
+
+    expect(res.status).toBe(403);
+    expect(res.text).toBe('Access denied');
+    expect(getGameInfoFromID(sessionID)?.mode).toBe(GameMode.P2P);
+    expect(getLNURLWFromID(sessionID)?.id).toBe('lnurlw-wrong-ip');
+    expect(emit).not.toHaveBeenCalled();
+  });
+
   it('rejects a missing or unknown LNURL-withdraw', async () => {
     const missing = await post('/api/LNURL/withdrawn', {});
     const unknown = await post('/api/LNURL/withdrawn', { lnurlw: 'missing-withdraw' });
@@ -112,14 +129,21 @@ function seedWithdraw(
   setLNURLWToID(lnurlw, sessionID);
 }
 
-function post(path: string, body: unknown): Promise<{ status: number; text: string }> {
+function post(
+  path: string,
+  body: unknown,
+  realIp: string = LNBITS_IP
+): Promise<{ status: number; text: string }> {
   return new Promise((resolve, reject) => {
     const server = app.listen(0, '127.0.0.1', () => {
       const address = server.address();
       const port = typeof address === 'object' && address ? address.port : 0;
       fetch(`http://127.0.0.1:${port}${path}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          'x-real-ip': realIp,
+        },
         body: JSON.stringify(body),
       })
         .then(async (res) => {

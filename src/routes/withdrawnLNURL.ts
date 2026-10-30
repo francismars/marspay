@@ -8,10 +8,11 @@ import { getGameInfoFromID } from '../state/gameState';
 import { GameMode } from '../types/game';
 import { broadcastOnlineRoomLists } from '../socket/onlineRoom';
 import { markOnlineRoomSettledBySession } from '../state/onlineRoomState';
+import { requireLnbitsCaller } from './requireLnbitsCaller';
 
 const router = Router();
 
-router.post('/', (req: Request, res: Response) => {
+router.post('/', requireLnbitsCaller, (req: Request, res: Response) => {
   const lnurlw = req.body.lnurlw;
   if (!lnurlw) {
     console.error(`${dateNow()} LNURLw not sent.`);

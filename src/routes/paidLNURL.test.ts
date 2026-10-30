@@ -31,6 +31,7 @@ vi.mock('../telemetry/trackEvent', () => ({
   trackEvent: vi.fn(),
 }));
 
+import { trackEvent } from '../telemetry/trackEvent';
 import paidLNURL from './paidLNURL';
 
 const LNBITS_IP = '203.0.113.5';
@@ -83,7 +84,12 @@ describe('paid LNURL webhook', () => {
 
     const res = await post(
       '/api/LNURL/paid',
-      { lnurlp: 'lnurl-credit', amount: 10_000_000, comment: 'Ada' },
+      {
+        lnurlp: 'lnurl-credit',
+        amount: 10_000_000,
+        comment: 'Ada',
+        payment_hash: 'hash-credit',
+      },
       LNBITS_IP
     );
 
@@ -109,7 +115,11 @@ describe('paid LNURL webhook', () => {
     const sessionID = 'paid-dust';
     seedPayLink(sessionID, 'lnurl-dust', 0);
 
-    const res = await post('/api/LNURL/paid', { lnurlp: 'lnurl-dust', amount: 1000 }, LNBITS_IP);
+    const res = await post(
+      '/api/LNURL/paid',
+      { lnurlp: 'lnurl-dust', amount: 1000, payment_hash: 'hash-dust' },
+      LNBITS_IP
+    );
 
     expect(res.status).toBe(200);
     expect(getGameInfoFromID(sessionID)?.players.get(PlayerRole.Player1)?.value).toBe(1);
@@ -128,6 +138,82 @@ describe('paid LNURL webhook', () => {
     expect(clipped).toBe('a'.repeat(64));
     expect(blank).toBe(PlayerRole.Player1);
     expect(joined).toBe('Ada Bee');
+  });
+
+  it('answers when the session has no LNURL list', async () => {
+    setLNURLPToID('lnurl-no-list', 'paid-no-list');
+
+    const res = await post(
+      '/api/LNURL/paid',
+      { lnurlp: 'lnurl-no-list', amount: 10_000_000, payment_hash: 'hash-no-list' },
+      LNBITS_IP
+    );
+
+    expect(res.status).toBe(404);
+    expect(res.text).toBe('LNURLp not found for session.');
+    expect(payInvoice).not.toHaveBeenCalled();
+  });
+
+  it('refuses to credit a payment that has no hash', async () => {
+    const sessionID = 'paid-no-hash';
+    seedPayLink(sessionID, 'lnurl-no-hash', 500);
+
+    const res = await post(
+      '/api/LNURL/paid',
+      { lnurlp: 'lnurl-no-hash', amount: 10_000_000 },
+      LNBITS_IP
+    );
+
+    expect(res.status).toBe(400);
+    expect(res.text).toBe('payment_hash not sent.');
+    expect(getGameInfoFromID(sessionID)?.players.get(PlayerRole.Player1)?.value).toBe(500);
+    expect(payInvoice).not.toHaveBeenCalled();
+  });
+
+  it('credits a payment hash once and ignores the retry', async () => {
+    const sessionID = 'paid-replay';
+    seedPayLink(sessionID, 'lnurl-replay', 0);
+    const body = {
+      lnurlp: 'lnurl-replay',
+      amount: 10_000_000,
+      payment_hash: 'HASH-Replay',
+    };
+
+    const first = await post('/api/LNURL/paid', body, LNBITS_IP);
+    const retry = await post('/api/LNURL/paid', { ...body, payment_hash: ' hash-replay ' }, LNBITS_IP);
+
+    expect(first.status).toBe(200);
+    expect(retry.status).toBe(200);
+    expect(retry.text).toBe('OK');
+    expect(getGameInfoFromID(sessionID)?.players.get(PlayerRole.Player1)?.value).toBe(10_000);
+    await vi.waitFor(() => expect(payInvoice).toHaveBeenCalledTimes(3));
+  });
+
+  it('skips a split whose address is missing and still pays the others', async () => {
+    delete process.env.DESIGNER_LNADDRESS;
+    const sessionID = 'paid-missing-address';
+    seedPayLink(sessionID, 'lnurl-missing-address', 0);
+
+    const res = await post(
+      '/api/LNURL/paid',
+      { lnurlp: 'lnurl-missing-address', amount: 10_000_000, payment_hash: 'hash-missing-address' },
+      LNBITS_IP
+    );
+
+    expect(res.status).toBe(200);
+    expect(getGameInfoFromID(sessionID)?.players.get(PlayerRole.Player1)?.value).toBe(10_000);
+    await vi.waitFor(() => expect(payInvoice).toHaveBeenCalledTimes(2));
+    expect(getInvoiceFromCallback.mock.calls.map((call) => call[1])).toEqual([195, 195]);
+    expect(trackEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'deposit.split',
+        outcome: 'error',
+        reason: 'missing_address',
+        sessionID,
+        amountSats: 95,
+        meta: { role: 'designer' },
+      })
+    );
   });
 });
 
@@ -162,7 +248,11 @@ async function payNamed(
   name: string | null = 'Ada'
 ) {
   seedPayLink(sessionID, lnurlp, 0, undefined, name);
-  const res = await post('/api/LNURL/paid', { lnurlp, amount: 3000, comment }, LNBITS_IP);
+  const res = await post(
+    '/api/LNURL/paid',
+    { lnurlp, amount: 3000, comment, payment_hash: `hash-${lnurlp}` },
+    LNBITS_IP
+  );
   expect(res.status).toBe(200);
   return getGameInfoFromID(sessionID)?.players.get(PlayerRole.Player1)?.name;
 }

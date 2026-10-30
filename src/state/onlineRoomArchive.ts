@@ -63,7 +63,7 @@ export interface OnlineArchivedListItem {
     p2Picture?: string;
     winnerPicture?: string;
     winnerRole?: PlayerRole.Player1 | PlayerRole.Player2;
-    outcome?: 'forfeit' | 'abandoned' | 'unclaimed';
+    outcome?: 'forfeit' | 'abandoned' | 'unclaimed' | 'stalled';
     winnerSessionID?: string;
     winnerPubkey?: string;
     p1Paid?: number;

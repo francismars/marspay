@@ -60,6 +60,8 @@ const ROOM_CLEANUP_MS = 15 * 1000;
 export const ONLINE_FORFEIT_DISCONNECT_MS = 5 * 60 * 1000;
 /** After the match starts, or after a reconnect, before an idle segment opens. */
 export const ONLINE_IDLE_GRACE_MS = 15 * 1000;
+/** No score change for this long ends a started match, even if both seats are still steering. */
+export const ONLINE_STALL_MS = 10 * 60 * 1000;
 /** How long a connected winner may sit on the results screen before the prize is settled. */
 export const ONLINE_CLAIM_PRESENCE_MS = 15 * 60 * 1000;
 /** Fallback delete if immediate removal after payout failed (should be rare). */
@@ -1548,6 +1550,13 @@ export function stepRoomSnapshot(roomId: string) {
   if (!live || live.phase !== 'playing') {
     return;
   }
+  const now = Date.now();
+  if (live.snapshot.state.gameStarted && live.lastCaptureAt == null) {
+    live.lastCaptureAt = now;
+  }
+  if (endStalledMatch(live, now)) {
+    return;
+  }
   if (isForfeitPaused(live)) {
     return;
   }
@@ -1559,10 +1568,14 @@ export function stepRoomSnapshot(roomId: string) {
 
   const state = live.snapshot.state;
   const wasStarted = state.gameStarted;
+  const scoreBefore: [number, number] = [state.score[0], state.score[1]];
   consumePendingTurnsForRoom(live);
   applyOnlineInputsToState(live);
 
   const respawned = stepOnlineGame(state);
+  if (state.score[0] !== scoreBefore[0] || state.score[1] !== scoreBefore[1]) {
+    live.lastCaptureAt = Date.now();
+  }
   for (const player of respawned) {
     const sessionID =
       player === 'P1' ? p1.sessionID : player === 'P2' ? p2.sessionID : undefined;
@@ -1574,6 +1587,7 @@ export function stepRoomSnapshot(roomId: string) {
   live.snapshot.tick += 1;
   if (!wasStarted && live.snapshot.state.gameStarted) {
     noteSimStartedSteer(live);
+    live.lastCaptureAt = Date.now();
   }
   // Record from mutual arena confirm + countdown onward (skip idle pre-start arena).
   if (shouldRecordOnlineReplay(state)) {
@@ -2433,6 +2447,44 @@ function syncSeatIdle(room: OnlineRoom, now: number) {
   if (changed) {
     notifyOnlineRoomChange({ roomId: room.roomId, prev: room.phase, next: room.phase });
   }
+}
+
+function endStalledMatch(room: OnlineRoom, now: number): boolean {
+  if (room.phase !== 'playing' || !room.snapshot.state.gameStarted) {
+    return false;
+  }
+  const since = room.lastCaptureAt;
+  if (since == null || now - since <= ONLINE_STALL_MS) {
+    return false;
+  }
+  const state = room.snapshot.state;
+  const p1Score = state.score[0] ?? 0;
+  const p2Score = state.score[1] ?? 0;
+  const tied = p1Score === p2Score;
+  const winner = p2Score > p1Score ? 'P2' : 'P1';
+  trackOnlineOk('online.match.stalled', {
+    roomId: room.roomId,
+    roomCode: room.roomCode,
+    buyin: room.buyin,
+    amountSats: tied ? 0 : netPayoutSats(Math.max(p1Score, p2Score)),
+    meta: { winner: tied ? 'tie' : winner, p1Score, p2Score },
+  });
+  if (tied) {
+    abandonPaidMatch(room, 'stalled');
+    return true;
+  }
+  state.gameEnded = true;
+  state.countdownStart = false;
+  if (winner === 'P2') {
+    state.winnerPlayer = 'P2';
+    state.winnerName = room.seats.get(PlayerRole.Player2)?.name ?? state.p2Name;
+  } else {
+    state.winnerPlayer = 'P1';
+    state.winnerName = room.seats.get(PlayerRole.Player1)?.name ?? state.p1Name;
+  }
+  room.postGame.outcome = 'stalled';
+  setRoomPhase(room.roomId, 'postgame');
+  return true;
 }
 
 function noteSimStartedSteer(room: OnlineRoom, now = Date.now()) {

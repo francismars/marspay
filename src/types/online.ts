@@ -70,6 +70,8 @@ export interface OnlineRoom {
   updatedAt: number;
   /** Last join, input, payment, or other real activity. Sim ticks do not move this. */
   lastActivityAt: number;
+  /** When the sim started, or the last time either score changed. */
+  lastCaptureAt?: number;
   buyin: number;
   /** Incremented each time lobby → playing (match 1, 2, … for DoN rematches). */
   matchRound: number;
@@ -111,7 +113,7 @@ export interface OnlineRoom {
     settledAt?: number;
     doubleOrNothingVotes: Set<string>;
     /** `abandoned` keeps the pot in the house and must not open a winner withdrawal. `unclaimed` records a prize for a manual payout. */
-    outcome?: 'forfeit' | 'abandoned' | 'unclaimed';
+    outcome?: 'forfeit' | 'abandoned' | 'unclaimed' | 'stalled';
     /** When postgame started. The 15-minute presence deadline runs from here and does not pause. */
     claimStartedAt?: number;
     /** Away time already banked on the prize clock. The open segment is the winner's `disconnectedAt`. */
@@ -189,7 +191,7 @@ export interface OnlineRoomListItem {
     winnerPicture?: string;
     winnerRole?: PlayerRole.Player1 | PlayerRole.Player2;
     /** Absent on a normal score finish. `unclaimed` is a prize waiting for a manual payout. */
-    outcome?: 'forfeit' | 'abandoned' | 'unclaimed';
+    outcome?: 'forfeit' | 'abandoned' | 'unclaimed' | 'stalled';
     p1Paid?: number;
     p2Paid?: number;
     winnerSessionID?: string;

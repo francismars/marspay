@@ -10,6 +10,7 @@ import {
   ONLINE_CLAIM_PRESENCE_MS,
   ONLINE_FORFEIT_DISCONNECT_MS,
   ONLINE_IDLE_GRACE_MS,
+  ONLINE_STALL_MS,
   completeOnlineClaimPayout,
   confirmOnlineStart,
   createOnlineRoom,
@@ -446,6 +447,94 @@ describe('online disconnect forfeit', () => {
     updateRoomInput(room.roomId, host, { intent: 'down' });
     expect(seat(room.roomId, PlayerRole.Player1).idleSince).toBeUndefined();
     expect(getOnlineForfeitStatus(getRoomById(room.roomId)!)).toBeUndefined();
+  });
+});
+
+describe('stalled match', () => {
+  function startedMatch(label: string, score: [number, number]) {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const start = new Date('2026-10-29T22:00:00Z');
+    vi.setSystemTime(start);
+    const { room, host, guest } = paidMatch(label);
+    const live = getRoomById(room.roomId)!;
+    live.snapshot.state.gameStarted = true;
+    live.snapshot.state.score = score;
+    markSteered(room.roomId, host, start.getTime());
+    markSteered(room.roomId, guest, start.getTime());
+    stepRoomSnapshot(room.roomId);
+    return { room, host, guest, start };
+  }
+
+  it('pays the leader 95% when nobody scores for 10 minutes', () => {
+    const { room, host, guest, start } = startedMatch('stall-lead', [840, 1160]);
+    const due = start.getTime() + ONLINE_STALL_MS + 1;
+    vi.setSystemTime(due);
+    markSteered(room.roomId, host, due);
+    markSteered(room.roomId, guest, due);
+    stepRoomSnapshot(room.roomId);
+
+    const finished = getRoomById(room.roomId)!;
+    expect(finished.phase).toBe('postgame');
+    expect(finished.snapshot.state.winnerPlayer).toBe('P2');
+    expect(finished.postGame.winnerPoints).toBe(1160);
+    expect(netPayoutSats(finished.postGame.winnerPoints)).toBe(1102);
+    expect(finished.postGame.outcome).toBe('stalled');
+    expect(trackOnlineOk).toHaveBeenCalledWith(
+      'online.match.stalled',
+      expect.objectContaining({
+        amountSats: 1102,
+        meta: expect.objectContaining({ winner: 'P2', p1Score: 840, p2Score: 1160 }),
+      })
+    );
+  });
+
+  it('abandons a stalled match when the scores are equal', () => {
+    const { room, host, guest, start } = startedMatch('stall-tie', [1000, 1000]);
+    const due = start.getTime() + ONLINE_STALL_MS + 1;
+    vi.setSystemTime(due);
+    markSteered(room.roomId, host, due);
+    markSteered(room.roomId, guest, due);
+    stepRoomSnapshot(room.roomId);
+
+    expect(getRoomById(room.roomId)).toBeUndefined();
+    expect(trackOnlineOk).toHaveBeenCalledWith(
+      'online.match.stalled',
+      expect.objectContaining({
+        meta: expect.objectContaining({ winner: 'tie', p1Score: 1000, p2Score: 1000 }),
+      })
+    );
+    expect(trackOnlineOk).toHaveBeenCalledWith(
+      'online.room.abandoned',
+      expect.objectContaining({
+        meta: expect.objectContaining({ reason: 'stalled' }),
+      })
+    );
+  });
+
+  it('resets the stall clock when a capture changes the score', () => {
+    const { room, host, guest, start } = startedMatch('stall-capture', [1000, 1000]);
+    const live = getRoomById(room.roomId)!;
+    expect(live.lastCaptureAt).toBe(start.getTime());
+    expect(live.snapshot.state.p1.head).toEqual([7, 12]);
+
+    const captureAt = start.getTime() + ONLINE_STALL_MS - 1000;
+    vi.setSystemTime(captureAt);
+    live.snapshot.state.coinbases = [{ pos: [8, 12] }];
+    markSteered(room.roomId, host, captureAt);
+    markSteered(room.roomId, guest, captureAt);
+    stepRoomSnapshot(room.roomId);
+
+    const afterCapture = getRoomById(room.roomId)!;
+    expect(afterCapture.phase).toBe('playing');
+    expect(afterCapture.snapshot.state.score[0]).toBeGreaterThan(1000);
+    expect(afterCapture.lastCaptureAt).toBe(captureAt);
+
+    const stillPlayingAt = captureAt + ONLINE_STALL_MS - 1000;
+    vi.setSystemTime(stillPlayingAt);
+    markSteered(room.roomId, host, stillPlayingAt);
+    markSteered(room.roomId, guest, stillPlayingAt);
+    stepRoomSnapshot(room.roomId);
+    expect(getRoomById(room.roomId)!.phase).toBe('playing');
   });
 });
 

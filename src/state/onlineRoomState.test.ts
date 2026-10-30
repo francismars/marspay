@@ -476,13 +476,14 @@ describe('stalled match', () => {
     const finished = getRoomById(room.roomId)!;
     expect(finished.phase).toBe('postgame');
     expect(finished.snapshot.state.winnerPlayer).toBe('P2');
-    expect(finished.postGame.winnerPoints).toBe(1160);
-    expect(netPayoutSats(finished.postGame.winnerPoints)).toBe(1102);
+    expect(finished.snapshot.state.score).toEqual([0, 2000]);
+    expect(finished.postGame.winnerPoints).toBe(2000);
+    expect(netPayoutSats(finished.postGame.winnerPoints)).toBe(1900);
     expect(finished.postGame.outcome).toBe('stalled');
     expect(trackOnlineOk).toHaveBeenCalledWith(
       'online.match.stalled',
       expect.objectContaining({
-        amountSats: 1102,
+        amountSats: 1900,
         meta: expect.objectContaining({ winner: 'P2', p1Score: 840, p2Score: 1160 }),
       })
     );
@@ -556,13 +557,15 @@ describe('prize claim clock', () => {
   }
 
   it('sends the claim clock while the winner is still connected', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-29T21:30:00Z'));
     const { room, host, guest } = finishedMatch('claim-show');
     expect(getOnlineForfeitStatus(getRoomById(room.roomId)!)).toBeUndefined();
     const claim = getOnlineClaimStatus(getRoomById(room.roomId)!);
     expect(claim?.limitMs).toBe(ONLINE_CLAIM_PRESENCE_MS);
-    expect(claim?.remainingMs).toBeGreaterThan(ONLINE_CLAIM_PRESENCE_MS - 1000);
+    expect(claim?.remainingMs).toBe(ONLINE_CLAIM_PRESENCE_MS);
     expect(serializeRoom(getRoomById(room.roomId)!).forfeit).toBeUndefined();
-    expect(serializeRoom(getRoomById(room.roomId)!).claim?.remainingMs).toBe(claim?.remainingMs);
+    expect(serializeRoom(getRoomById(room.roomId)!).claim?.remainingMs).toBe(ONLINE_CLAIM_PRESENCE_MS);
 
     leaveRoom(guest);
     leaveRoom(host);

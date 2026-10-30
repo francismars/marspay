@@ -2462,26 +2462,34 @@ function endStalledMatch(room: OnlineRoom, now: number): boolean {
   const p2Score = state.score[1] ?? 0;
   const tied = p1Score === p2Score;
   const winner = p2Score > p1Score ? 'P2' : 'P1';
+  const p1 = room.seats.get(PlayerRole.Player1);
+  const p2 = room.seats.get(PlayerRole.Player2);
+  const paid = Math.floor((p1?.paidAmount ?? 0) + (p2?.paidAmount ?? 0));
+  const pot = paid > 0 ? paid : state.totalPoints;
   trackOnlineOk('online.match.stalled', {
     roomId: room.roomId,
     roomCode: room.roomCode,
     buyin: room.buyin,
-    amountSats: tied ? 0 : netPayoutSats(Math.max(p1Score, p2Score)),
+    amountSats: tied ? 0 : netPayoutSats(pot),
     meta: { winner: tied ? 'tie' : winner, p1Score, p2Score },
   });
   if (tied) {
     abandonPaidMatch(room, 'stalled');
     return true;
   }
+  state.totalPoints = pot;
   state.gameEnded = true;
   state.countdownStart = false;
   if (winner === 'P2') {
     state.winnerPlayer = 'P2';
-    state.winnerName = room.seats.get(PlayerRole.Player2)?.name ?? state.p2Name;
+    state.winnerName = p2?.name ?? state.p2Name;
+    state.score = [0, pot];
   } else {
     state.winnerPlayer = 'P1';
-    state.winnerName = room.seats.get(PlayerRole.Player1)?.name ?? state.p1Name;
+    state.winnerName = p1?.name ?? state.p1Name;
+    state.score = [pot, 0];
   }
+  room.snapshot.hud = getOnlineHudState(state);
   room.postGame.outcome = 'stalled';
   setRoomPhase(room.roomId, 'postgame');
   return true;

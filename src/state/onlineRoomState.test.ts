@@ -7,6 +7,7 @@ import { cleanupInactiveSessions } from './cleanupState';
 import { appendOnlineMatchArchive } from './onlineRoomArchive';
 import {
   ONLINE_FORFEIT_DISCONNECT_MS,
+  ONLINE_IDLE_GRACE_MS,
   completeOnlineClaimPayout,
   confirmOnlineStart,
   createOnlineRoom,
@@ -21,6 +22,7 @@ import {
   serializeRoom,
   stepRoomSnapshot,
   takeDueClaimPayouts,
+  updateRoomInput,
 } from './onlineRoomState';
 
 vi.mock('../telemetry/onlineTelemetry', () => ({
@@ -73,11 +75,24 @@ function seat(roomId: string, role: PlayerRole.Player1 | PlayerRole.Player2) {
   return getRoomById(roomId)!.seats.get(role)!;
 }
 
+function steer(roomId: string, sessionID: string) {
+  getRoomById(roomId)!.inputBySession.set(sessionID, {
+    up: false,
+    down: false,
+    left: false,
+    right: false,
+    latchedDir: 'Up',
+    pendingTurn: '',
+    steerLockUntilRelease: false,
+  });
+}
+
 describe('online disconnect forfeit', () => {
   it('gives the pot to the player who stays after the other has been gone for 5 minutes', () => {
-    const { room, guest } = paidMatch('stay');
+    const { room, host, guest } = paidMatch('stay');
     expect(room.phase).toBe('playing');
     expect(room.snapshot.state.gameStarted).toBe(false);
+    confirmOnlineStart(room.roomId, host);
 
     leaveRoom(guest);
     const goneAt = seat(room.roomId, PlayerRole.Player2).disconnectedAt!;
@@ -114,6 +129,7 @@ describe('online disconnect forfeit', () => {
     expect(paused.snapshot.state.p1.head).toEqual(head);
 
     const goneAt = seat(room.roomId, PlayerRole.Player2).disconnectedAt!;
+    steer(room.roomId, host);
     resolveOnlineDisconnects(goneAt + ONLINE_FORFEIT_DISCONNECT_MS);
     expect(getRoomById(room.roomId)!.phase).toBe('postgame');
     expect(getRoomById(room.roomId)!.snapshot.state.winnerPlayer).toBe('P1');
@@ -123,7 +139,8 @@ describe('online disconnect forfeit', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const start = new Date('2026-10-29T12:00:00Z');
     vi.setSystemTime(start);
-    const { room, guest } = paidMatch('accumulate');
+    const { room, host, guest } = paidMatch('accumulate');
+    confirmOnlineStart(room.roomId, host);
 
     leaveRoom(guest);
     vi.setSystemTime(start.getTime() + 3 * 60 * 1000);
@@ -177,7 +194,8 @@ describe('online disconnect forfeit', () => {
   });
 
   it('does not turn a paid match into an empty lobby after a long disconnect', () => {
-    const { room, guest } = paidMatch('long');
+    const { room, host, guest } = paidMatch('long');
+    confirmOnlineStart(room.roomId, host);
     leaveRoom(guest);
     const goneAt = seat(room.roomId, PlayerRole.Player2).disconnectedAt!;
     resolveOnlineDisconnects(goneAt + 15 * 60 * 1000);
@@ -261,6 +279,70 @@ describe('online disconnect forfeit', () => {
     room.lastActivityAt = 1;
     runOnlineRoomCleanup(ROOM_IDLE_AFTER);
     expect(getRoomById(room.roomId)).toBeUndefined();
+  });
+
+  it('forfeits a seat that never steers and gives the match to the player who does', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const start = new Date('2026-10-29T20:00:00Z');
+    vi.setSystemTime(start);
+    const { room, host } = paidMatch('idle-win');
+    const live = getRoomById(room.roomId)!;
+    live.snapshot.state.gameStarted = true;
+    steer(room.roomId, host);
+
+    vi.setSystemTime(start.getTime() + ONLINE_IDLE_GRACE_MS);
+    resolveOnlineDisconnects();
+    const clock = getOnlineForfeitStatus(getRoomById(room.roomId)!);
+    expect(clock?.p1RemainingMs).toBeUndefined();
+    expect(clock?.p2Reason).toBe('idle');
+    expect(clock?.p2RemainingMs).toBe(ONLINE_FORFEIT_DISCONNECT_MS);
+
+    vi.setSystemTime(start.getTime() + ONLINE_IDLE_GRACE_MS + ONLINE_FORFEIT_DISCONNECT_MS);
+    resolveOnlineDisconnects();
+    const won = getRoomById(room.roomId)!;
+    expect(won.phase).toBe('postgame');
+    expect(won.snapshot.state.winnerPlayer).toBe('P1');
+    expect(won.postGame.outcome).toBe('forfeit');
+  });
+
+  it('drops the room when one seat is idle and the other is disconnected', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const start = new Date('2026-10-29T20:10:00Z');
+    vi.setSystemTime(start);
+    const { room, guest } = paidMatch('idle-dc');
+    getRoomById(room.roomId)!.snapshot.state.gameStarted = true;
+    leaveRoom(guest);
+
+    vi.setSystemTime(start.getTime() + ONLINE_FORFEIT_DISCONNECT_MS);
+    resolveOnlineDisconnects();
+    expect(getRoomById(room.roomId)).toBeUndefined();
+    expect(trackOnlineOk).toHaveBeenCalledWith(
+      'online.room.abandoned',
+      expect.objectContaining({
+        meta: expect.objectContaining({ reason: 'idle' }),
+      })
+    );
+  });
+
+  it('pauses the shared bank when an idle seat steers again', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const start = new Date('2026-10-29T20:20:00Z');
+    vi.setSystemTime(start);
+    const { room, host } = paidMatch('idle-steer');
+    getRoomById(room.roomId)!.snapshot.state.gameStarted = true;
+
+    vi.setSystemTime(start.getTime() + ONLINE_IDLE_GRACE_MS);
+    resolveOnlineDisconnects();
+    vi.setSystemTime(start.getTime() + ONLINE_IDLE_GRACE_MS + 60 * 1000);
+    updateRoomInput(room.roomId, host, { intent: 'up' });
+
+    const live = getRoomById(room.roomId)!;
+    expect(seat(room.roomId, PlayerRole.Player1).disconnectMs).toBe(60 * 1000);
+    expect(seat(room.roomId, PlayerRole.Player1).idleSince).toBeUndefined();
+    const clock = getOnlineForfeitStatus(live);
+    expect(clock?.p1RemainingMs).toBeUndefined();
+    expect(clock?.p2Reason).toBe('idle');
+    expect(clock?.p2RemainingMs).toBe(ONLINE_FORFEIT_DISCONNECT_MS - 60 * 1000);
   });
 });
 

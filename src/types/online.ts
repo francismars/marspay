@@ -21,8 +21,12 @@ export interface OnlineSeatState {
   ready?: boolean;
   /** Set while this paid seat's socket is gone. Cleared on reconnect. */
   disconnectedAt?: number;
-  /** Ms already spent disconnected this match. The open disconnect is added on top. */
+  /** Ms already spent disconnected or idle this match. The open segment is added on top. */
   disconnectMs?: number;
+  /** Set while this paid seat is connected but not steering. Cleared when they steer or the socket drops. */
+  idleSince?: number;
+  /** Idle does not open before this time. Set when the match starts and when the seat reconnects. */
+  idleGraceUntil?: number;
   name?: string;
   picture?: string;
   pubkey?: string;
@@ -116,12 +120,14 @@ export interface OnlineRoom {
   };
 }
 
-/** Shown while a paid seat is disconnected. Remaining time accumulates across reconnects. */
+/** Shown while a paid seat is disconnected or idle. Remaining time accumulates across reconnects. */
 export interface OnlineForfeitPause {
   paused: boolean;
   limitMs: number;
   p1RemainingMs?: number;
   p2RemainingMs?: number;
+  p1Reason?: 'disconnect' | 'idle';
+  p2Reason?: 'disconnect' | 'idle';
 }
 
 /** Winner must claim before this runs out. Only present during postgame while that seat is disconnected. */

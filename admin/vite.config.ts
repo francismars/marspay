@@ -7,7 +7,7 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   base: '/dashboard/',
   build: {
-    outDir: path.resolve(__dirname, '../public/admin'),
+    outDir: path.resolve(import.meta.dirname, '../public/admin'),
     emptyOutDir: true,
   },
   server: {

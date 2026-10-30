@@ -60,6 +60,8 @@ const ROOM_CLEANUP_MS = 15 * 1000;
 export const ONLINE_FORFEIT_DISCONNECT_MS = 5 * 60 * 1000;
 /** After the match starts, or after a reconnect, before an idle segment opens. */
 export const ONLINE_IDLE_GRACE_MS = 15 * 1000;
+/** Both seats paid and still no countdown: start anyway, then the idle forfeit applies. */
+export const ONLINE_START_WAIT_MS = 60 * 1000;
 /** No score change for this long ends a started match, even if both seats are still steering. */
 export const ONLINE_STALL_MS = 10 * 60 * 1000;
 /** How long a connected winner may sit on the results screen before the prize is settled. */
@@ -1298,6 +1300,7 @@ export function setRoomPhase(roomId: string, phase: OnlineRoom['phase']) {
     room.matchRound += 1;
   }
   if (phase === 'playing') {
+    room.startWaitSince = Date.now();
     room.postGame.doubleOrNothingVotes.clear();
     room.postGame.settledAt = undefined;
     room.postGame.outcome = undefined;
@@ -1551,6 +1554,7 @@ export function stepRoomSnapshot(roomId: string) {
     return;
   }
   const now = Date.now();
+  maybeForceOnlineCountdown(live, now);
   if (live.snapshot.state.gameStarted && live.lastCaptureAt == null) {
     live.lastCaptureAt = now;
   }
@@ -2856,6 +2860,29 @@ function maybeStartPaidMatch(room: OnlineRoom) {
   }
   setRoomPhase(room.roomId, 'playing');
   return true;
+}
+
+function maybeForceOnlineCountdown(room: OnlineRoom, now: number): void {
+  const state = room.snapshot.state;
+  if (state.gameStarted || state.countdownStart) {
+    return;
+  }
+  const p1 = room.seats.get(PlayerRole.Player1);
+  const p2 = room.seats.get(PlayerRole.Player2);
+  if (p1?.status !== 'paid' || p2?.status !== 'paid') {
+    return;
+  }
+  if (room.startWaitSince == null) {
+    room.startWaitSince = room.createdAt;
+  }
+  if (now - room.startWaitSince < ONLINE_START_WAIT_MS) {
+    return;
+  }
+  startOnlineCountdown(state);
+  pushReplayFrame(room);
+  logOnlineState(
+    `arena start wait elapsed roomId=${room.roomId} waitedMs=${now - room.startWaitSince}`
+  );
 }
 
 function maybeStartOnlineCountdown(room: OnlineRoom): boolean {

@@ -72,6 +72,11 @@ export interface OnlineRoom {
   lastActivityAt: number;
   /** When the sim started, or the last time either score changed. */
   lastCaptureAt?: number;
+  /**
+   * When this match entered the arena with both seats paid, waiting for confirms.
+   * Missing on a room that was already waiting when the timer was added; that room uses `createdAt`.
+   */
+  startWaitSince?: number;
   buyin: number;
   /** Incremented each time lobby → playing (match 1, 2, … for DoN rematches). */
   matchRound: number;

@@ -10,6 +10,7 @@ import {
   ONLINE_CLAIM_PRESENCE_MS,
   ONLINE_FORFEIT_DISCONNECT_MS,
   ONLINE_IDLE_GRACE_MS,
+  ONLINE_START_WAIT_MS,
   ONLINE_STALL_MS,
   completeOnlineClaimPayout,
   confirmOnlineStart,
@@ -88,6 +89,12 @@ function paidMatch(label: string) {
 
 function seat(roomId: string, role: PlayerRole.Player1 | PlayerRole.Player2) {
   return getRoomById(roomId)!.seats.get(role)!;
+}
+
+function runUntilMatchStarted(roomId: string) {
+  for (let i = 0; i < 80 && !getRoomById(roomId)?.snapshot.state.gameStarted; i += 1) {
+    stepRoomSnapshot(roomId);
+  }
 }
 
 function markSteered(roomId: string, sessionID: string, at: number) {
@@ -952,6 +959,100 @@ describe('settlement', () => {
     expect(takeDueClaimPayouts()).toEqual([
       expect.objectContaining({ roomId: room.roomId, amountSats: 1900 }),
     ]);
+  });
+
+  it('starts a paid room that is still waiting after 60 seconds', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const start = new Date('2026-10-30T18:00:00Z');
+    vi.setSystemTime(start);
+    const { room, host } = paidMatch('start-wait');
+    confirmOnlineStart(room.roomId, host);
+    expect(getRoomById(room.roomId)!.snapshot.state.countdownStart).toBe(false);
+
+    vi.setSystemTime(start.getTime() + ONLINE_START_WAIT_MS - 1);
+    stepRoomSnapshot(room.roomId);
+    expect(getRoomById(room.roomId)!.snapshot.state.countdownStart).toBe(false);
+
+    vi.setSystemTime(start.getTime() + ONLINE_START_WAIT_MS);
+    stepRoomSnapshot(room.roomId);
+    expect(getRoomById(room.roomId)!.snapshot.state.countdownStart).toBe(true);
+
+    runUntilMatchStarted(room.roomId);
+    const startedAt = Date.now();
+    const quietAt = startedAt + ONLINE_IDLE_GRACE_MS + 1;
+    vi.setSystemTime(quietAt);
+    markSteered(room.roomId, host, quietAt);
+    stepRoomSnapshot(room.roomId);
+    expect(getOnlineForfeitStatus(getRoomById(room.roomId)!)?.p2Reason).toBe('idle');
+
+    const dueAt = quietAt + ONLINE_FORFEIT_DISCONNECT_MS;
+    vi.setSystemTime(dueAt);
+    markSteered(room.roomId, host, dueAt);
+    resolveOnlineDisconnects(dueAt);
+    const won = getRoomById(room.roomId)!;
+    expect(won.phase).toBe('postgame');
+    expect(won.postGame.outcome).toBe('forfeit');
+    expect(won.snapshot.state.winnerPlayer).toBe('P1');
+    expect(won.snapshot.state.score[0]).toBe(won.snapshot.state.totalPoints);
+    expect(netPayoutSats(won.postGame.winnerPoints)).toBe(1900);
+  });
+
+  it('abandons when neither player confirms and both then sit idle', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const start = new Date('2026-10-30T18:10:00Z');
+    vi.setSystemTime(start);
+    const { room } = paidMatch('start-neither');
+
+    vi.setSystemTime(start.getTime() + ONLINE_START_WAIT_MS);
+    stepRoomSnapshot(room.roomId);
+    expect(getRoomById(room.roomId)!.snapshot.state.countdownStart).toBe(true);
+    runUntilMatchStarted(room.roomId);
+
+    const quietAt = Date.now() + ONLINE_IDLE_GRACE_MS + 1;
+    vi.setSystemTime(quietAt);
+    stepRoomSnapshot(room.roomId);
+    const clock = getOnlineForfeitStatus(getRoomById(room.roomId)!);
+    expect(clock?.p1Reason).toBe('idle');
+    expect(clock?.p2Reason).toBe('idle');
+
+    vi.setSystemTime(quietAt + ONLINE_FORFEIT_DISCONNECT_MS);
+    resolveOnlineDisconnects();
+    expect(getRoomById(room.roomId)).toBeUndefined();
+    const payload = vi.mocked(appendOnlineMatchArchive).mock.calls.at(-1)?.[0];
+    const serialized = payload?.serializedRoom as { result?: { outcome?: string } };
+    expect(serialized.result?.outcome).toBe('abandoned');
+  });
+
+  it('still starts immediately when both players confirm inside the minute', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const start = new Date('2026-10-30T18:20:00Z');
+    vi.setSystemTime(start);
+    const { room, host, guest } = paidMatch('start-both');
+    confirmOnlineStart(room.roomId, host);
+    expect(getRoomById(room.roomId)!.snapshot.state.countdownStart).toBe(false);
+    confirmOnlineStart(room.roomId, guest);
+    expect(getRoomById(room.roomId)!.snapshot.state.countdownStart).toBe(true);
+    expect(getRoomById(room.roomId)!.snapshot.state.gameStarted).toBe(false);
+
+    vi.setSystemTime(start.getTime() + ONLINE_START_WAIT_MS - 1);
+    runUntilMatchStarted(room.roomId);
+    expect(getRoomById(room.roomId)!.phase).toBe('playing');
+    expect(getRoomById(room.roomId)!.snapshot.state.gameStarted).toBe(true);
+    expect(getOnlineForfeitStatus(getRoomById(room.roomId)!)).toBeUndefined();
+  });
+
+  it('starts a room that was already waiting, and older than 60 seconds, on the next tick', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const start = new Date('2026-10-30T18:30:00Z');
+    vi.setSystemTime(start);
+    const { room } = paidMatch('start-legacy');
+    const live = getRoomById(room.roomId)!;
+    live.startWaitSince = undefined;
+    live.createdAt = start.getTime() - ONLINE_START_WAIT_MS;
+    expect(live.snapshot.state.countdownStart).toBe(false);
+
+    stepRoomSnapshot(room.roomId);
+    expect(getRoomById(room.roomId)!.snapshot.state.countdownStart).toBe(true);
   });
 
   it('lets a failed manual payout be locked again', () => {

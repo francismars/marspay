@@ -284,7 +284,7 @@ export type OnlineMatchResult = {
   p1Score: number;
   p2Score: number;
   netPrize: number;
-  outcome?: 'forfeit' | 'abandoned';
+  outcome?: 'forfeit' | 'abandoned' | 'unclaimed';
   p1Paid?: number;
   p2Paid?: number;
 };

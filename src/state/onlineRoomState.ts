@@ -59,6 +59,8 @@ const ROOM_CLEANUP_MS = 15 * 1000;
 export const ONLINE_FORFEIT_DISCONNECT_MS = 5 * 60 * 1000;
 /** After the match starts, or after a reconnect, before an idle segment opens. */
 export const ONLINE_IDLE_GRACE_MS = 15 * 1000;
+/** How long a connected winner may sit on the results screen before the prize is settled. */
+export const ONLINE_CLAIM_PRESENCE_MS = 15 * 60 * 1000;
 /** Fallback delete if immediate removal after payout failed (should be rare). */
 const SETTLED_ROOM_DELETE_FALLBACK_MS = 30 * 1000;
 const ONLINE_REPLAY_TICK_MS = 100;
@@ -157,14 +159,28 @@ function markSeatDisconnected(seat: OnlineSeatState, now: number): OnlineSeatSta
   return { ...bankedIdle, disconnectedAt: now, ready: false, idleSince: undefined };
 }
 
+function bankWinnerClaimAway(
+  room: OnlineRoom,
+  role: PlayerRole.Player1 | PlayerRole.Player2,
+  seat: OnlineSeatState,
+  now: number
+) {
+  if (room.phase !== 'postgame' || room.postGame.winnerRole !== role || !seat.disconnectedAt) {
+    return;
+  }
+  room.postGame.claimMs = (room.postGame.claimMs ?? 0) + Math.max(0, now - seat.disconnectedAt);
+}
+
 function reconnectPaidSeat(
+  room: OnlineRoom,
+  role: PlayerRole.Player1 | PlayerRole.Player2,
   seat: OnlineSeatState,
   socketID: string,
-  now: number,
-  phase: OnlineRoom['phase']
+  now: number
 ): OnlineSeatState {
+  bankWinnerClaimAway(room, role, seat, now);
   const next: OnlineSeatState = { ...bankSeatDisconnect(seat, now), socketID, ready: false };
-  if (phase === 'playing') {
+  if (room.phase === 'playing') {
     next.lastSteerAt = now;
   }
   return next;
@@ -354,6 +370,11 @@ function roomToFinishedResult(room: OnlineRoom): NonNullable<OnlineRoomListItem[
     outcome: room.postGame.outcome,
     p1Paid: p1Seat?.paidAmount,
     p2Paid: p2Seat?.paidAmount,
+    winnerSessionID: room.postGame.outcome === 'abandoned' ? undefined : room.postGame.winnerSessionID,
+    winnerPubkey:
+      room.postGame.outcome === 'abandoned'
+        ? undefined
+        : (room.postGame.winnerRole === PlayerRole.Player2 ? p2Seat : p1Seat)?.pubkey,
   };
 }
 
@@ -544,7 +565,7 @@ function tryReclaimPaidSeatOnJoin(
       roomIdBySession.delete(oldSessionID);
       room.spectators.delete(oldSessionID);
     }
-    room.seats.set(role, reconnectPaidSeat({ ...seat, sessionID }, socketID, Date.now(), room.phase));
+    room.seats.set(role, reconnectPaidSeat(room, role, { ...seat, sessionID }, socketID, Date.now()));
     room.spectators.delete(sessionID);
     roomIdBySession.set(sessionID, roomId);
     logOnlineState(
@@ -575,7 +596,7 @@ export function joinRoom(
   let seated = false;
   for (const [role, seat] of room.seats.entries()) {
     if (seat.sessionID === sessionID) {
-      room.seats.set(role, reconnectPaidSeat(seat, socketID, now, room.phase));
+      room.seats.set(role, reconnectPaidSeat(room, role, seat, socketID, now));
       room.spectators.delete(sessionID);
       seated = true;
     }
@@ -1984,6 +2005,7 @@ export function settleOnlineRematchPayment(params: {
     lastSteerAt: undefined,
   });
   room.postGame.claimStartedAt = undefined;
+  room.postGame.claimMs = undefined;
   room.postGame.payoutLock = undefined;
   room.postGame.claimPayoutPending = undefined;
   room.postGame.claimPayoutAttemptAt = undefined;
@@ -2202,7 +2224,32 @@ function claimElapsedMs(room: OnlineRoom, now: number): number {
   return Math.max(0, now - started);
 }
 
-/** Prize deadline. Present for all of postgame until a payout or rematch locks. */
+function claimWinnerSeat(room: OnlineRoom): OnlineSeatState | undefined {
+  const role = room.postGame.winnerRole;
+  return role ? room.seats.get(role) : undefined;
+}
+
+function claimAwayTotalMs(room: OnlineRoom, now: number): number {
+  const banked = room.postGame.claimMs ?? 0;
+  const winner = claimWinnerSeat(room);
+  if (!winner?.disconnectedAt) {
+    return banked;
+  }
+  return banked + Math.max(0, now - winner.disconnectedAt);
+}
+
+function claimClockDue(room: OnlineRoom, now: number): boolean {
+  if (claimElapsedMs(room, now) >= ONLINE_CLAIM_PRESENCE_MS) {
+    return true;
+  }
+  const winner = claimWinnerSeat(room);
+  if (!winner?.disconnectedAt) {
+    return false;
+  }
+  return claimAwayTotalMs(room, now) >= ONLINE_FORFEIT_DISCONNECT_MS;
+}
+
+/** Prize deadline until a payout or rematch locks. The sooner of presence and, while the winner is gone, the away bank. */
 export function getOnlineClaimStatus(room: OnlineRoom, now = Date.now()): OnlineClaimClock | undefined {
   if (room.phase !== 'postgame' || room.postGame.rematchRequested || payoutChosen(room)) {
     return undefined;
@@ -2210,10 +2257,16 @@ export function getOnlineClaimStatus(room: OnlineRoom, now = Date.now()): Online
   if (room.postGame.payoutLock || !room.postGame.claimStartedAt) {
     return undefined;
   }
-  return {
-    remainingMs: Math.max(0, ONLINE_FORFEIT_DISCONNECT_MS - claimElapsedMs(room, now)),
-    limitMs: ONLINE_FORFEIT_DISCONNECT_MS,
-  };
+  const presenceMs = Math.max(0, ONLINE_CLAIM_PRESENCE_MS - claimElapsedMs(room, now));
+  const winner = claimWinnerSeat(room);
+  if (!winner?.disconnectedAt) {
+    return { remainingMs: presenceMs, limitMs: ONLINE_CLAIM_PRESENCE_MS };
+  }
+  const awayMs = Math.max(0, ONLINE_FORFEIT_DISCONNECT_MS - claimAwayTotalMs(room, now));
+  if (awayMs <= presenceMs) {
+    return { remainingMs: awayMs, limitMs: ONLINE_FORFEIT_DISCONNECT_MS };
+  }
+  return { remainingMs: presenceMs, limitMs: ONLINE_CLAIM_PRESENCE_MS };
 }
 
 export type ClaimPayoutJob = {
@@ -2528,6 +2581,47 @@ function abandonLobbySeat(
   deleteRoom(room.roomId, { roomNotFound: true });
 }
 
+function archiveUnclaimedPrize(room: OnlineRoom, amountSats: number) {
+  const winner = claimWinnerSeat(room);
+  const pubkey = winner?.pubkey;
+  room.postGame.outcome = 'unclaimed';
+  room.postGame.settledAt = Date.now();
+  if (room.matchRound < 1) {
+    room.matchRound = 1;
+  }
+  logOnlineState(
+    `unclaimed prize roomId=${room.roomId} amount=${amountSats} session=${winner?.sessionID ?? 'none'}`
+  );
+  trackOnlineOk('online.prize.unclaimed', {
+    roomId: room.roomId,
+    roomCode: room.roomCode,
+    buyin: room.buyin,
+    sessionID: winner?.sessionID,
+    pubkeyPrefix: pubkey ? pubkey.slice(0, 8) : undefined,
+    amountSats,
+    meta: {
+      winnerSessionID: winner?.sessionID ?? '',
+      winnerPubkey: pubkey ?? '',
+    },
+  });
+  const prevPhase = room.phase;
+  room.phase = 'finished';
+  room.snapshot.phase = 'finished';
+  logOnlineState(`phase changed roomId=${room.roomId} ${prevPhase} -> finished`);
+  const matchRound = room.matchRound;
+  void appendOnlineMatchArchive({
+    version: 1,
+    kind: 'match',
+    roomId: room.roomId,
+    matchRound,
+    archiveId: `${room.roomId}-r${matchRound}`,
+    finishedAt: Date.now(),
+    serializedRoom: serializeRoom(room) as Record<string, unknown>,
+    replay: packReplayForArchive([...room.replay.frames], room.replay.tickMs, room.replay.blockEvents),
+  });
+  deleteRoom(room.roomId, { roomNotFound: true });
+}
+
 function resolveClaimClock(room: OnlineRoom, now: number) {
   if (!roomById.has(room.roomId) || room.phase !== 'postgame') {
     return;
@@ -2535,7 +2629,7 @@ function resolveClaimClock(room: OnlineRoom, now: number) {
   if (room.postGame.rematchRequested || payoutChosen(room) || room.postGame.payoutLock || room.postGame.claimPayoutPending) {
     return;
   }
-  if (claimElapsedMs(room, now) < ONLINE_FORFEIT_DISCONNECT_MS) {
+  if (!claimClockDue(room, now)) {
     return;
   }
   const retryAt = room.postGame.claimPayoutAttemptAt ?? 0;
@@ -2547,17 +2641,7 @@ function resolveClaimClock(room: OnlineRoom, now: number) {
   const lnAddress = winner?.lnAddress?.trim();
   const amountSats = netPayoutSats(room.postGame.winnerPoints);
   if (!lnAddress || amountSats <= 0) {
-    const paid = Math.floor(winner?.paidAmount ?? 0);
-    logOnlineState(`claim expired roomId=${room.roomId} reason=no_ln_address amount=${amountSats}`);
-    trackOnlineOk('online.room.abandoned', {
-      roomId: room.roomId,
-      roomCode: room.roomCode,
-      buyin: room.buyin,
-      sessionID: winner?.sessionID,
-      amountSats: paid,
-      meta: { reason: 'claim_expired' },
-    });
-    deleteRoom(room.roomId, { roomNotFound: true });
+    archiveUnclaimedPrize(room, amountSats);
     return;
   }
   room.postGame.payoutLock = 'auto';
@@ -2645,6 +2729,7 @@ function resetRoomToLobby(room: OnlineRoom) {
   room.postGame.totalPrize = 0;
   room.postGame.outcome = undefined;
   room.postGame.claimStartedAt = undefined;
+  room.postGame.claimMs = undefined;
   room.postGame.payoutLock = undefined;
   room.postGame.claimPayoutPending = undefined;
   room.postGame.claimPayoutAttemptAt = undefined;

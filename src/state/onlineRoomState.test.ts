@@ -7,6 +7,7 @@ import { setIDToSocket } from './sessionState';
 import { cleanupInactiveSessions } from './cleanupState';
 import { appendOnlineMatchArchive } from './onlineRoomArchive';
 import {
+  ONLINE_CLAIM_PRESENCE_MS,
   ONLINE_FORFEIT_DISCONNECT_MS,
   ONLINE_IDLE_GRACE_MS,
   completeOnlineClaimPayout,
@@ -414,8 +415,8 @@ describe('prize claim clock', () => {
     const { room, host, guest } = finishedMatch('claim-show');
     expect(getOnlineForfeitStatus(getRoomById(room.roomId)!)).toBeUndefined();
     const claim = getOnlineClaimStatus(getRoomById(room.roomId)!);
-    expect(claim?.limitMs).toBe(ONLINE_FORFEIT_DISCONNECT_MS);
-    expect(claim?.remainingMs).toBeGreaterThan(ONLINE_FORFEIT_DISCONNECT_MS - 1000);
+    expect(claim?.limitMs).toBe(ONLINE_CLAIM_PRESENCE_MS);
+    expect(claim?.remainingMs).toBeGreaterThan(ONLINE_CLAIM_PRESENCE_MS - 1000);
     expect(serializeRoom(getRoomById(room.roomId)!).forfeit).toBeUndefined();
     expect(serializeRoom(getRoomById(room.roomId)!).claim?.remainingMs).toBe(claim?.remainingMs);
 
@@ -426,56 +427,109 @@ describe('prize claim clock', () => {
     expect(seat(room.roomId, PlayerRole.Player1).disconnectedAt).toEqual(expect.any(Number));
   });
 
-  it('deletes the room when the claim deadline hits zero and there is no Lightning address', () => {
+  it('keeps the room while a connected winner is still deciding', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const start = new Date('2026-10-29T21:00:00Z');
     vi.setSystemTime(start);
-    const { room } = finishedMatch('claim-drop');
+    const { room } = finishedMatch('claim-stay');
     const startedAt = getRoomById(room.roomId)!.postGame.claimStartedAt!;
-    resolveOnlineDisconnects(startedAt + ONLINE_FORFEIT_DISCONNECT_MS - 1);
-    expect(getRoomById(room.roomId)?.phase).toBe('postgame');
-    resolveOnlineDisconnects(startedAt + ONLINE_FORFEIT_DISCONNECT_MS);
-    expect(getRoomById(room.roomId)).toBeUndefined();
+    resolveOnlineDisconnects(startedAt + 10 * 60 * 1000);
+    const live = getRoomById(room.roomId)!;
+    expect(live.phase).toBe('postgame');
+    expect(tryLockOnlinePayout(room.roomId, 'lnurlw')).toBe(true);
     expect(takeDueClaimPayouts()).toEqual([]);
   });
 
-  it('pays the winner Lightning address when the claim deadline hits zero', () => {
+  it('pays once when the winner has been gone for five minutes across reconnects', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const start = new Date('2026-10-29T21:10:00Z');
     vi.setSystemTime(start);
-    const { room } = finishedMatch('claim-pay', 'ada@pay.example');
+    const { room, host } = finishedMatch('claim-away-pay', 'ada@pay.example');
     const startedAt = getRoomById(room.roomId)!.postGame.claimStartedAt!;
-    resolveOnlineDisconnects(startedAt + ONLINE_FORFEIT_DISCONNECT_MS);
-    const jobs = takeDueClaimPayouts();
-    expect(jobs).toEqual([
+    leaveRoom(host);
+    vi.setSystemTime(startedAt + 3 * 60 * 1000);
+    resolveOnlineDisconnects();
+    expect(getRoomById(room.roomId)?.phase).toBe('postgame');
+    expect(takeDueClaimPayouts()).toEqual([]);
+
+    joinRoom(room.roomId, host, `${host}-sock`);
+    expect(getRoomById(room.roomId)!.postGame.claimMs).toBe(3 * 60 * 1000);
+    leaveRoom(host);
+    vi.setSystemTime(startedAt + 5 * 60 * 1000);
+    resolveOnlineDisconnects();
+    expect(takeDueClaimPayouts()).toEqual([
       expect.objectContaining({
         roomId: room.roomId,
         lnAddress: 'ada@pay.example',
         amountSats: 1900,
       }),
     ]);
-    expect(getRoomById(room.roomId)?.phase).toBe('postgame');
-    completeOnlineClaimPayout(room.roomId, 'ada@pay.example');
+    resolveOnlineDisconnects(startedAt + 5 * 60 * 1000 + 20_000);
+    expect(takeDueClaimPayouts()).toEqual([]);
     const live = getRoomById(room.roomId)!;
-    expect(live.phase).toBe('finished');
-    expect(live.postGame.payoutMethod).toBe('nostr_zap');
-    expect(live.postGame.payoutTarget).toBe('ada@pay.example');
-    expect(getOnlineClaimStatus(live)).toBeUndefined();
+    expect(live.postGame.payoutLock).toBe('auto');
+    completeOnlineClaimPayout(room.roomId, 'ada@pay.example');
+    expect(getRoomById(room.roomId)!.phase).toBe('finished');
+    expect(getRoomById(room.roomId)!.postGame.payoutMethod).toBe('nostr_zap');
   });
 
-  it('keeps the claim deadline running when the winner reconnects', () => {
+  it('archives an unclaimed prize when a winner with no Lightning address is gone for five minutes', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const start = new Date('2026-10-29T21:15:00Z');
+    vi.setSystemTime(start);
+    const { room, host } = finishedMatch('claim-unclaimed');
+    getRoomById(room.roomId)!.seats.get(PlayerRole.Player1)!.pubkey = 'winner-pubkey';
+    const startedAt = getRoomById(room.roomId)!.postGame.claimStartedAt!;
+    leaveRoom(host);
+    vi.setSystemTime(startedAt + 3 * 60 * 1000);
+    joinRoom(room.roomId, host, `${host}-sock`);
+    leaveRoom(host);
+    vi.setSystemTime(startedAt + 5 * 60 * 1000);
+    resolveOnlineDisconnects();
+    expect(getRoomById(room.roomId)).toBeUndefined();
+    expect(takeDueClaimPayouts()).toEqual([]);
+    expect(appendOnlineMatchArchive).toHaveBeenCalled();
+    const payload = vi.mocked(appendOnlineMatchArchive).mock.calls.at(-1)?.[0];
+    const serialized = payload?.serializedRoom as {
+      phase?: string;
+      result?: {
+        outcome?: string;
+        netPrize?: number;
+        winnerSessionID?: string;
+        winnerPubkey?: string;
+      };
+    };
+    expect(serialized.phase).toBe('finished');
+    expect(serialized.result?.outcome).toBe('unclaimed');
+    expect(serialized.result?.netPrize).toBe(1900);
+    expect(serialized.result?.winnerSessionID).toBe(host);
+    expect(serialized.result?.winnerPubkey).toBe('winner-pubkey');
+    expect(trackOnlineOk).toHaveBeenCalledWith(
+      'online.prize.unclaimed',
+      expect.objectContaining({
+        sessionID: host,
+        amountSats: 1900,
+        meta: expect.objectContaining({ winnerPubkey: 'winner-pubkey', winnerSessionID: host }),
+      })
+    );
+  });
+
+  it('pauses the away bank when the winner reconnects', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const start = new Date('2026-10-29T21:20:00Z');
     vi.setSystemTime(start);
     const { room, host } = finishedMatch('claim-bank');
+    const startedAt = getRoomById(room.roomId)!.postGame.claimStartedAt!;
     leaveRoom(host);
     vi.setSystemTime(start.getTime() + 60 * 1000);
     joinRoom(room.roomId, host, `${host}-sock`);
     const back = getRoomById(room.roomId)!;
     expect(back.seats.get(PlayerRole.Player1)?.disconnectedAt).toBeUndefined();
+    expect(back.postGame.claimMs).toBe(60 * 1000);
     const claim = getOnlineClaimStatus(back);
+    expect(claim?.limitMs).toBe(ONLINE_CLAIM_PRESENCE_MS);
     expect(claim?.remainingMs).toBe(
-      ONLINE_FORFEIT_DISCONNECT_MS - (start.getTime() + 60 * 1000 - back.postGame.claimStartedAt!)
+      ONLINE_CLAIM_PRESENCE_MS - (start.getTime() + 60 * 1000 - startedAt)
     );
   });
 
@@ -485,14 +539,14 @@ describe('prize claim clock', () => {
     vi.setSystemTime(start);
     const { room } = finishedMatch('claim-lock', 'ada@pay.example');
     const startedAt = getRoomById(room.roomId)!.postGame.claimStartedAt!;
-    resolveOnlineDisconnects(startedAt + ONLINE_FORFEIT_DISCONNECT_MS);
+    resolveOnlineDisconnects(startedAt + ONLINE_CLAIM_PRESENCE_MS);
     expect(takeDueClaimPayouts()).toHaveLength(1);
     const locked = getRoomById(room.roomId)!;
     expect(locked.postGame.payoutLock).toBe('auto');
     expect(getOnlineClaimStatus(locked)).toBeUndefined();
     expect(tryLockOnlinePayout(room.roomId, 'lnurlw')).toBe(false);
     expect(tryLockOnlinePayout(room.roomId, 'nostr')).toBe(false);
-    resolveOnlineDisconnects(startedAt + ONLINE_FORFEIT_DISCONNECT_MS + 20_000);
+    resolveOnlineDisconnects(startedAt + ONLINE_CLAIM_PRESENCE_MS + 20_000);
     expect(takeDueClaimPayouts()).toEqual([]);
 
     const manual = finishedMatch('manual-lock', 'bea@pay.example');

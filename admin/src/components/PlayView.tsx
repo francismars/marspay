@@ -46,6 +46,9 @@ function matchSummary(row: OnlineHistoryRow): string {
     const kept = (result.p1Paid ?? 0) + (result.p2Paid ?? 0);
     return `Abandoned · ${kept.toLocaleString()} sats kept${duration}`;
   }
+  if (result.outcome === 'unclaimed') {
+    return `Unclaimed · ${result.winnerName} · ${result.netPrize.toLocaleString()} sats${duration}`;
+  }
   const via = result.outcome === 'forfeit' ? ' by forfeit' : '';
   return `${result.winnerName} won${via} ${result.p1Score}–${result.p2Score} · ${result.netPrize.toLocaleString()} sats net${duration}`;
 }

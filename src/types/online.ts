@@ -110,10 +110,12 @@ export interface OnlineRoom {
     rematchWaitingForSessionID?: string;
     settledAt?: number;
     doubleOrNothingVotes: Set<string>;
-    /** `abandoned` keeps the pot in the house and must not open a winner withdrawal. */
-    outcome?: 'forfeit' | 'abandoned';
-    /** When the postgame prize deadline started. It does not pause. */
+    /** `abandoned` keeps the pot in the house and must not open a winner withdrawal. `unclaimed` records a prize for a manual payout. */
+    outcome?: 'forfeit' | 'abandoned' | 'unclaimed';
+    /** When postgame started. The 15-minute presence deadline runs from here and does not pause. */
     claimStartedAt?: number;
+    /** Away time already banked on the prize clock. The open segment is the winner's `disconnectedAt`. */
+    claimMs?: number;
     /** Set synchronously before a payout await so withdraw and the claim clock cannot both pay. */
     payoutLock?: 'auto' | 'lnurlw' | 'nostr';
     /** A claim-expiry payout is in flight or waiting out a retry. */
@@ -132,7 +134,10 @@ export interface OnlineForfeitPause {
   p2Reason?: 'disconnect' | 'idle';
 }
 
-/** Prize deadline for the whole of postgame, until a payout or rematch locks. */
+/**
+ * Prize deadline until a payout or rematch locks.
+ * `remainingMs` is the sooner of the 15-minute presence deadline and, while the winner is gone, the 5-minute away bank.
+ */
 export interface OnlineClaimClock {
   remainingMs: number;
   limitMs: number;
@@ -183,10 +188,12 @@ export interface OnlineRoomListItem {
     p2Picture?: string;
     winnerPicture?: string;
     winnerRole?: PlayerRole.Player1 | PlayerRole.Player2;
-    /** Absent on a normal score finish. */
-    outcome?: 'forfeit' | 'abandoned';
+    /** Absent on a normal score finish. `unclaimed` is a prize waiting for a manual payout. */
+    outcome?: 'forfeit' | 'abandoned' | 'unclaimed';
     p1Paid?: number;
     p2Paid?: number;
+    winnerSessionID?: string;
+    winnerPubkey?: string;
   };
   replay?: {
     available: boolean;

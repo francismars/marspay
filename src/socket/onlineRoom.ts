@@ -70,6 +70,8 @@ import {
   getOnlineClaimStatus,
   getOnlineForfeitStatus,
   getRoomById,
+  tryLockOnlinePayout,
+  unlockOnlinePayout,
   getRoomBySession,
   hasAnyPaidSeat,
   isOnlineRoomWinnerViewer,
@@ -107,6 +109,8 @@ import {
 import { netPayoutSats } from '../utils/payout';
 
 const ONLINE_TICK_MS = 100;
+const ONLINE_CLOCK_EMIT_MS = 1000;
+const lastClockRoomEmit = new Map<string, number>();
 /** Kind-9735 can arrive after the player pays a host invoice that is about to expire. */
 const ONLINE_SEAT_LIGHTNING_RECEIPT_GRACE_MS = 10 * 60 * 1000;
 
@@ -877,7 +881,7 @@ export async function createOnlineWithdrawalHandler(socket: Socket, payload: { r
     socket.emit('onlinePinInvalid', { reason: 'rematch_pending' });
     return;
   }
-  if (info.lnurlw || info.payoutMethod === 'nostr_zap') {
+  if (info.lnurlw || info.payoutMethod === 'nostr_zap' || room.postGame.payoutLock) {
     if (info.lnurlw) {
       socket.emit('resCreateOnlineWithdrawal', { roomId: payload.roomId, lnurlw: info.lnurlw });
       return;
@@ -891,8 +895,13 @@ export async function createOnlineWithdrawalHandler(socket: Socket, payload: { r
     socket.emit('resCreateOnlineWithdrawal', { roomId: payload.roomId, lnurlw: 'pass' });
     return;
   }
+  if (!tryLockOnlinePayout(payload.roomId, 'lnurlw')) {
+    socket.emit('onlinePinInvalid', { reason: 'withdraw_started' });
+    return;
+  }
   const lnurlw = await createLNURLW(amount, P2PMAXWITHDRAWALS);
   if (!lnurlw) {
+    unlockOnlinePayout(payload.roomId);
     logOnline(sessionID, `createOnlineWithdrawal failed roomId=${payload.roomId} reason=lnbits_error`);
     socket.emit('onlinePinInvalid', { reason: 'lnurlw_create_failed' });
     return;
@@ -942,7 +951,7 @@ export async function createOnlineNostrPayoutHandler(socket: Socket, payload: { 
     socket.emit('onlinePinInvalid', { reason: 'rematch_pending' });
     return;
   }
-  if (info.lnurlw || info.payoutMethod === 'nostr_zap') {
+  if (info.lnurlw || info.payoutMethod === 'nostr_zap' || room.postGame.payoutLock) {
     logOnline(sessionID, `createOnlineNostrPayout blocked roomId=${payload.roomId} reason=withdraw_started`);
     socket.emit('onlinePinInvalid', { reason: 'withdraw_started' });
     return;
@@ -959,9 +968,14 @@ export async function createOnlineNostrPayoutHandler(socket: Socket, payload: { 
     socket.emit('onlinePinInvalid', { reason: 'zero_amount' });
     return;
   }
+  if (!tryLockOnlinePayout(payload.roomId, 'nostr')) {
+    socket.emit('onlinePinInvalid', { reason: 'withdraw_started' });
+    return;
+  }
   try {
     await payLnAddress(lnAddress, amount);
   } catch (error) {
+    unlockOnlinePayout(payload.roomId);
     logOnline(
       sessionID,
       `createOnlineNostrPayout failed roomId=${payload.roomId} ln=${lnAddress} error=${
@@ -1660,8 +1674,15 @@ export function startOnlineLoop() {
       const clock =
         live.phase === 'lobby' ? getOnlineForfeitStatus(live) : getOnlineClaimStatus(live);
       if (!clock) {
+        lastClockRoomEmit.delete(live.roomId);
         continue;
       }
+      const now = Date.now();
+      const previous = lastClockRoomEmit.get(live.roomId) ?? 0;
+      if (now - previous < ONLINE_CLOCK_EMIT_MS) {
+        continue;
+      }
+      lastClockRoomEmit.set(live.roomId, now);
       io.to(live.roomId).emit('onlineRoomUpdated', serializeRoom(live));
     }
   }, ONLINE_TICK_MS);

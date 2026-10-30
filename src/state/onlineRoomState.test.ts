@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PlayerRole } from '../types/game';
+import { clearSteeringOnRespawn } from '../game/onlineInput';
 import { netPayoutSats } from '../utils/payout';
 import { trackOnlineOk } from '../telemetry/onlineTelemetry';
 import { setIDToSocket } from './sessionState';
@@ -22,6 +23,7 @@ import {
   serializeRoom,
   stepRoomSnapshot,
   takeDueClaimPayouts,
+  tryLockOnlinePayout,
   updateRoomInput,
 } from './onlineRoomState';
 
@@ -75,16 +77,13 @@ function seat(roomId: string, role: PlayerRole.Player1 | PlayerRole.Player2) {
   return getRoomById(roomId)!.seats.get(role)!;
 }
 
-function steer(roomId: string, sessionID: string) {
-  getRoomById(roomId)!.inputBySession.set(sessionID, {
-    up: false,
-    down: false,
-    left: false,
-    right: false,
-    latchedDir: 'Up',
-    pendingTurn: '',
-    steerLockUntilRelease: false,
-  });
+function markSteered(roomId: string, sessionID: string, at: number) {
+  const room = getRoomById(roomId)!;
+  for (const [role, seat] of room.seats) {
+    if (seat.sessionID === sessionID) {
+      room.seats.set(role, { ...seat, lastSteerAt: at });
+    }
+  }
 }
 
 describe('online disconnect forfeit', () => {
@@ -129,8 +128,9 @@ describe('online disconnect forfeit', () => {
     expect(paused.snapshot.state.p1.head).toEqual(head);
 
     const goneAt = seat(room.roomId, PlayerRole.Player2).disconnectedAt!;
-    steer(room.roomId, host);
-    resolveOnlineDisconnects(goneAt + ONLINE_FORFEIT_DISCONNECT_MS);
+    const dueAt = goneAt + ONLINE_FORFEIT_DISCONNECT_MS;
+    markSteered(room.roomId, host, dueAt);
+    resolveOnlineDisconnects(dueAt);
     expect(getRoomById(room.roomId)!.phase).toBe('postgame');
     expect(getRoomById(room.roomId)!.snapshot.state.winnerPlayer).toBe('P1');
   });
@@ -281,24 +281,66 @@ describe('online disconnect forfeit', () => {
     expect(getRoomById(room.roomId)).toBeUndefined();
   });
 
-  it('forfeits a seat that never steers and gives the match to the player who does', () => {
+  it('keeps simulating after a crash clears a latched direction', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const start = new Date('2026-10-29T20:30:00Z');
+    vi.setSystemTime(start);
+    const { room, host, guest } = paidMatch('crash');
+    const live = getRoomById(room.roomId)!;
+    live.snapshot.state.gameStarted = true;
+    const steeredAt = start.getTime() + ONLINE_IDLE_GRACE_MS + 1000;
+    markSteered(room.roomId, host, steeredAt);
+    markSteered(room.roomId, guest, steeredAt);
+    for (const sessionID of [host, guest]) {
+      const input = {
+        up: false,
+        down: false,
+        left: false,
+        right: false,
+        latchedDir: 'Up' as const,
+        pendingTurn: '' as const,
+        steerLockUntilRelease: false,
+      };
+      live.inputBySession.set(sessionID, input);
+      clearSteeringOnRespawn(input);
+    }
+    vi.setSystemTime(steeredAt + 200);
+    const tick = live.snapshot.tick;
+    stepRoomSnapshot(room.roomId);
+    stepRoomSnapshot(room.roomId);
+    const after = getRoomById(room.roomId)!;
+    expect(after.phase).toBe('playing');
+    expect(after.snapshot.tick).toBe(tick + 2);
+    expect(getOnlineForfeitStatus(after)).toBeUndefined();
+  });
+
+  it('runs an idle clock without pausing the board, then forfeits to the player still steering', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const start = new Date('2026-10-29T20:00:00Z');
     vi.setSystemTime(start);
-    const { room, host } = paidMatch('idle-win');
+    const { room, host, guest } = paidMatch('idle-win');
     const live = getRoomById(room.roomId)!;
     live.snapshot.state.gameStarted = true;
-    steer(room.roomId, host);
+    markSteered(room.roomId, host, start.getTime());
+    markSteered(room.roomId, guest, start.getTime());
 
-    vi.setSystemTime(start.getTime() + ONLINE_IDLE_GRACE_MS);
+    const quietAt = start.getTime() + ONLINE_IDLE_GRACE_MS + 1;
+    vi.setSystemTime(quietAt);
+    markSteered(room.roomId, host, quietAt);
+    const tick = live.snapshot.tick;
+    stepRoomSnapshot(room.roomId);
     resolveOnlineDisconnects();
-    const clock = getOnlineForfeitStatus(getRoomById(room.roomId)!);
+    const clock = getOnlineForfeitStatus(getRoomById(room.roomId)!, quietAt);
+    expect(getRoomById(room.roomId)!.snapshot.tick).toBe(tick + 1);
+    expect(clock?.paused).toBe(false);
     expect(clock?.p1RemainingMs).toBeUndefined();
     expect(clock?.p2Reason).toBe('idle');
     expect(clock?.p2RemainingMs).toBe(ONLINE_FORFEIT_DISCONNECT_MS);
 
-    vi.setSystemTime(start.getTime() + ONLINE_IDLE_GRACE_MS + ONLINE_FORFEIT_DISCONNECT_MS);
-    resolveOnlineDisconnects();
+    const dueAt = quietAt + ONLINE_FORFEIT_DISCONNECT_MS;
+    vi.setSystemTime(dueAt);
+    markSteered(room.roomId, host, dueAt);
+    resolveOnlineDisconnects(dueAt);
     const won = getRoomById(room.roomId)!;
     expect(won.phase).toBe('postgame');
     expect(won.snapshot.state.winnerPlayer).toBe('P1');
@@ -309,8 +351,9 @@ describe('online disconnect forfeit', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const start = new Date('2026-10-29T20:10:00Z');
     vi.setSystemTime(start);
-    const { room, guest } = paidMatch('idle-dc');
+    const { room, host, guest } = paidMatch('idle-dc');
     getRoomById(room.roomId)!.snapshot.state.gameStarted = true;
+    markSteered(room.roomId, host, start.getTime());
     leaveRoom(guest);
 
     vi.setSystemTime(start.getTime() + ONLINE_FORFEIT_DISCONNECT_MS);
@@ -328,18 +371,22 @@ describe('online disconnect forfeit', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const start = new Date('2026-10-29T20:20:00Z');
     vi.setSystemTime(start);
-    const { room, host } = paidMatch('idle-steer');
+    const { room, host, guest } = paidMatch('idle-steer');
     getRoomById(room.roomId)!.snapshot.state.gameStarted = true;
+    markSteered(room.roomId, host, start.getTime());
+    markSteered(room.roomId, guest, start.getTime());
 
-    vi.setSystemTime(start.getTime() + ONLINE_IDLE_GRACE_MS);
+    const openedAt = start.getTime() + ONLINE_IDLE_GRACE_MS + 1;
+    vi.setSystemTime(openedAt);
     resolveOnlineDisconnects();
-    vi.setSystemTime(start.getTime() + ONLINE_IDLE_GRACE_MS + 60 * 1000);
+    vi.setSystemTime(openedAt + 60 * 1000);
     updateRoomInput(room.roomId, host, { intent: 'up' });
 
     const live = getRoomById(room.roomId)!;
     expect(seat(room.roomId, PlayerRole.Player1).disconnectMs).toBe(60 * 1000);
     expect(seat(room.roomId, PlayerRole.Player1).idleSince).toBeUndefined();
     const clock = getOnlineForfeitStatus(live);
+    expect(clock?.paused).toBe(false);
     expect(clock?.p1RemainingMs).toBeUndefined();
     expect(clock?.p2Reason).toBe('idle');
     expect(clock?.p2RemainingMs).toBe(ONLINE_FORFEIT_DISCONNECT_MS - 60 * 1000);
@@ -430,6 +477,30 @@ describe('prize claim clock', () => {
     expect(claim?.remainingMs).toBe(
       ONLINE_FORFEIT_DISCONNECT_MS - (start.getTime() + 60 * 1000 - back.postGame.claimStartedAt!)
     );
+  });
+
+  it('refuses a second payout while one is already locked', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const start = new Date('2026-10-29T21:30:00Z');
+    vi.setSystemTime(start);
+    const { room } = finishedMatch('claim-lock', 'ada@pay.example');
+    const startedAt = getRoomById(room.roomId)!.postGame.claimStartedAt!;
+    resolveOnlineDisconnects(startedAt + ONLINE_FORFEIT_DISCONNECT_MS);
+    expect(takeDueClaimPayouts()).toHaveLength(1);
+    const locked = getRoomById(room.roomId)!;
+    expect(locked.postGame.payoutLock).toBe('auto');
+    expect(getOnlineClaimStatus(locked)).toBeUndefined();
+    expect(tryLockOnlinePayout(room.roomId, 'lnurlw')).toBe(false);
+    expect(tryLockOnlinePayout(room.roomId, 'nostr')).toBe(false);
+    resolveOnlineDisconnects(startedAt + ONLINE_FORFEIT_DISCONNECT_MS + 20_000);
+    expect(takeDueClaimPayouts()).toEqual([]);
+
+    const manual = finishedMatch('manual-lock', 'bea@pay.example');
+    expect(tryLockOnlinePayout(manual.room.roomId, 'nostr')).toBe(true);
+    const manualStarted = getRoomById(manual.room.roomId)!.postGame.claimStartedAt!;
+    resolveOnlineDisconnects(manualStarted + ONLINE_FORFEIT_DISCONNECT_MS);
+    expect(takeDueClaimPayouts()).toEqual([]);
+    expect(getOnlineClaimStatus(getRoomById(manual.room.roomId)!)).toBeUndefined();
   });
 });
 

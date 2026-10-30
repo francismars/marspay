@@ -23,10 +23,10 @@ export interface OnlineSeatState {
   disconnectedAt?: number;
   /** Ms already spent disconnected or idle this match. The open segment is added on top. */
   disconnectMs?: number;
-  /** Set while this paid seat is connected but not steering. Cleared when they steer or the socket drops. */
+  /** Set while this paid seat is connected but has not steered recently. Cleared when they steer. */
   idleSince?: number;
-  /** Idle does not open before this time. Set when the match starts and when the seat reconnects. */
-  idleGraceUntil?: number;
+  /** Last direction or start confirm. Idle opens 15s after this once the sim is running. */
+  lastSteerAt?: number;
   name?: string;
   picture?: string;
   pubkey?: string;
@@ -114,6 +114,8 @@ export interface OnlineRoom {
     outcome?: 'forfeit' | 'abandoned';
     /** When the postgame prize deadline started. It does not pause. */
     claimStartedAt?: number;
+    /** Set synchronously before a payout await so withdraw and the claim clock cannot both pay. */
+    payoutLock?: 'auto' | 'lnurlw' | 'nostr';
     /** A claim-expiry payout is in flight or waiting out a retry. */
     claimPayoutPending?: boolean;
     claimPayoutAttemptAt?: number;

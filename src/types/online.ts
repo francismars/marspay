@@ -112,8 +112,8 @@ export interface OnlineRoom {
     doubleOrNothingVotes: Set<string>;
     /** `abandoned` keeps the pot in the house and must not open a winner withdrawal. */
     outcome?: 'forfeit' | 'abandoned';
-    /** Ms the winner has already been disconnected during postgame. Match disconnect time is not included. */
-    claimBankMs?: number;
+    /** When the postgame prize deadline started. It does not pause. */
+    claimStartedAt?: number;
     /** A claim-expiry payout is in flight or waiting out a retry. */
     claimPayoutPending?: boolean;
     claimPayoutAttemptAt?: number;
@@ -130,7 +130,7 @@ export interface OnlineForfeitPause {
   p2Reason?: 'disconnect' | 'idle';
 }
 
-/** Winner must claim before this runs out. Only present during postgame while that seat is disconnected. */
+/** Prize deadline for the whole of postgame, until a payout or rematch locks. */
 export interface OnlineClaimClock {
   remainingMs: number;
   limitMs: number;

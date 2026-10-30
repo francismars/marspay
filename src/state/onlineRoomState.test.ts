@@ -363,37 +363,42 @@ describe('prize claim clock', () => {
     return { room: getRoomById(room.roomId)!, host, guest };
   }
 
-  it('omits the match clock after the result and starts the claim clock only for the winner', () => {
+  it('sends the claim clock while the winner is still connected', () => {
     const { room, host, guest } = finishedMatch('claim-show');
-    leaveRoom(guest);
     expect(getOnlineForfeitStatus(getRoomById(room.roomId)!)).toBeUndefined();
-    expect(getOnlineClaimStatus(getRoomById(room.roomId)!)).toBeUndefined();
-    expect(getRoomById(room.roomId)!.phase).toBe('postgame');
-
-    leaveRoom(host);
     const claim = getOnlineClaimStatus(getRoomById(room.roomId)!);
     expect(claim?.limitMs).toBe(ONLINE_FORFEIT_DISCONNECT_MS);
     expect(claim?.remainingMs).toBeGreaterThan(ONLINE_FORFEIT_DISCONNECT_MS - 1000);
     expect(serializeRoom(getRoomById(room.roomId)!).forfeit).toBeUndefined();
     expect(serializeRoom(getRoomById(room.roomId)!).claim?.remainingMs).toBe(claim?.remainingMs);
+
+    leaveRoom(guest);
+    leaveRoom(host);
+    expect(getRoomById(room.roomId)!.phase).toBe('postgame');
+    expect(getOnlineClaimStatus(getRoomById(room.roomId)!)).toBeDefined();
+    expect(seat(room.roomId, PlayerRole.Player1).disconnectedAt).toEqual(expect.any(Number));
   });
 
-  it('deletes the room when the winner never returns and has no Lightning address', () => {
-    const { room, host } = finishedMatch('claim-drop');
-    leaveRoom(host);
-    const goneAt = seat(room.roomId, PlayerRole.Player1).disconnectedAt!;
-    resolveOnlineDisconnects(goneAt + ONLINE_FORFEIT_DISCONNECT_MS - 1);
+  it('deletes the room when the claim deadline hits zero and there is no Lightning address', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const start = new Date('2026-10-29T21:00:00Z');
+    vi.setSystemTime(start);
+    const { room } = finishedMatch('claim-drop');
+    const startedAt = getRoomById(room.roomId)!.postGame.claimStartedAt!;
+    resolveOnlineDisconnects(startedAt + ONLINE_FORFEIT_DISCONNECT_MS - 1);
     expect(getRoomById(room.roomId)?.phase).toBe('postgame');
-    resolveOnlineDisconnects(goneAt + ONLINE_FORFEIT_DISCONNECT_MS);
+    resolveOnlineDisconnects(startedAt + ONLINE_FORFEIT_DISCONNECT_MS);
     expect(getRoomById(room.roomId)).toBeUndefined();
     expect(takeDueClaimPayouts()).toEqual([]);
   });
 
-  it('pays the winner Lightning address when the claim clock hits zero', () => {
-    const { room, host } = finishedMatch('claim-pay', 'ada@pay.example');
-    leaveRoom(host);
-    const goneAt = seat(room.roomId, PlayerRole.Player1).disconnectedAt!;
-    resolveOnlineDisconnects(goneAt + ONLINE_FORFEIT_DISCONNECT_MS);
+  it('pays the winner Lightning address when the claim deadline hits zero', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const start = new Date('2026-10-29T21:10:00Z');
+    vi.setSystemTime(start);
+    const { room } = finishedMatch('claim-pay', 'ada@pay.example');
+    const startedAt = getRoomById(room.roomId)!.postGame.claimStartedAt!;
+    resolveOnlineDisconnects(startedAt + ONLINE_FORFEIT_DISCONNECT_MS);
     const jobs = takeDueClaimPayouts();
     expect(jobs).toEqual([
       expect.objectContaining({
@@ -411,20 +416,20 @@ describe('prize claim clock', () => {
     expect(getOnlineClaimStatus(live)).toBeUndefined();
   });
 
-  it('pauses the claim bank when the winner reconnects', () => {
+  it('keeps the claim deadline running when the winner reconnects', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    const start = new Date('2026-10-29T18:00:00Z');
+    const start = new Date('2026-10-29T21:20:00Z');
     vi.setSystemTime(start);
     const { room, host } = finishedMatch('claim-bank');
     leaveRoom(host);
     vi.setSystemTime(start.getTime() + 60 * 1000);
     joinRoom(room.roomId, host, `${host}-sock`);
     const back = getRoomById(room.roomId)!;
-    expect(getOnlineClaimStatus(back)).toBeUndefined();
-    expect(back.postGame.claimBankMs).toBe(60 * 1000);
-    leaveRoom(host);
-    const claim = getOnlineClaimStatus(getRoomById(room.roomId)!, start.getTime() + 60 * 1000);
-    expect(claim?.remainingMs).toBe(ONLINE_FORFEIT_DISCONNECT_MS - 60 * 1000);
+    expect(back.seats.get(PlayerRole.Player1)?.disconnectedAt).toBeUndefined();
+    const claim = getOnlineClaimStatus(back);
+    expect(claim?.remainingMs).toBe(
+      ONLINE_FORFEIT_DISCONNECT_MS - (start.getTime() + 60 * 1000 - back.postGame.claimStartedAt!)
+    );
   });
 });
 

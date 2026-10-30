@@ -91,7 +91,7 @@ Server-validated practice challenges with real Lightning bounties. Full protocol
 
 - `GET /dashboard` — React ops dashboard (sign in with `ADMIN_PASSWORD`)
 - `GET /dashboard/api/*` — structured telemetry API (see [docs/TELEMETRY.md](docs/TELEMETRY.md))
-- `GET /dashboard/api/debug/raw` — legacy full in-memory JSON dump
+- `GET /dashboard/api/debug/raw` — legacy full in-memory JSON dump, only when `DASHBOARD_DEBUG_RAW=true`
 - Static assets at `GET /public/*`
 
 Build includes the admin UI: `npm run build` (runs `tsc` + `build:admin`).
@@ -167,7 +167,9 @@ Copy [`.env.example`](.env.example) to `.env` and fill in values from your LNbit
 cp .env.example .env
 ```
 
-Key variables: `PORT`, `LNBITS_*`, `NOSTR_PK`, `HOST_LNADDRESS`, `DEVELOPER_LNADDRESS`, `DESIGNER_LNADDRESS`, `ADMIN_PASSWORD`, `CHAINDUEL_NOSTR_PUBKEY`, `CHALLENGE_BOUNTY_DAILY_CAP_SATS`.
+Key variables: `PORT`, `LNBITS_*`, `LNBITS_WEBHOOK_SECRET`, `NOSTR_PK`, `HOST_LNADDRESS`, `DEVELOPER_LNADDRESS`, `DESIGNER_LNADDRESS`, `ADMIN_PASSWORD`, `CHAINDUEL_NOSTR_PUBKEY`, `CHALLENGE_BOUNTY_DAILY_CAP_SATS`.
+
+`LNBITS_WEBHOOK_SECRET` replaces the old `LNBITS_IP` allowlist. Deposit and withdraw webhooks accept only a request whose `X-Webhook-Secret` header matches it. Set the secret before restarting, and recreate any LNURL link that was created without it. A wrong secret blocks real deposits and withdrawals.
 
 ## API and documentation
 

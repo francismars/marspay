@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
+import { secretEqual } from '../utils/secretEqual';
 
 const COOKIE_NAME = 'marspay_dashboard';
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
@@ -49,10 +50,15 @@ export function requireDashboardAuth(req: Request, res: Response, next: NextFunc
   res.status(401).json({ error: 'Unauthorized' });
 }
 
+export function isDashboardDebugRawEnabled(): boolean {
+  const flag = process.env.DASHBOARD_DEBUG_RAW?.trim().toLowerCase();
+  return flag === '1' || flag === 'true';
+}
+
 export function handleDashboardLogin(req: Request, res: Response): void {
   const password = typeof req.body?.password === 'string' ? req.body.password : '';
   const secret = getSecret();
-  if (!secret || password !== secret) {
+  if (!secretEqual(password, secret)) {
     res.status(401).json({ error: 'Incorrect password' });
     return;
   }
@@ -73,11 +79,4 @@ export function handleDashboardLogin(req: Request, res: Response): void {
 export function handleDashboardLogout(_req: Request, res: Response): void {
   res.clearCookie(COOKIE_NAME, { path: '/dashboard' });
   res.json({ ok: true });
-}
-
-export function verifyLegacyPassword(req: Request): boolean {
-  const secret = getSecret();
-  if (!secret) return false;
-  const q = req.query.password;
-  return typeof q === 'string' && q === secret;
 }

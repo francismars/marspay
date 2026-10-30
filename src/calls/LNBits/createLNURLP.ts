@@ -2,6 +2,7 @@ import dotenv from 'dotenv';
 import { LNURLP } from '../../types/lnurlp';
 import { dateNow } from '../../utils/time';
 import { PAYURL } from '../../consts/lnbits';
+import { lnbitsWebhookHeadersJson, missingLnbitsEnv } from './webhookSecret';
 
 export default async function createLNURLP(
   description: string,
@@ -14,9 +15,17 @@ export default async function createLNURLP(
   const lnbitsURL = process.env.LNBITS_URL;
   const lnbitsKEY = process.env.LNBITS_KEY;
   const lnbitsHook = process.env.LNBITS_DEPOSITHOOK;
+  const webhookHeaders = lnbitsWebhookHeadersJson();
 
-  if (!lnbitsURL || !lnbitsKEY || !lnbitsHook) {
-    console.error(`${dateNow()} Missing LNbits environment variables`);
+  if (!lnbitsURL || !lnbitsKEY || !lnbitsHook || !webhookHeaders) {
+    console.error(
+      `${dateNow()} Missing LNbits environment variables: ${missingLnbitsEnv({
+        LNBITS_URL: lnbitsURL,
+        LNBITS_KEY: lnbitsKEY,
+        LNBITS_DEPOSITHOOK: lnbitsHook,
+        LNBITS_WEBHOOK_SECRET: webhookHeaders,
+      })}`
+    );
     return null;
   }
 
@@ -34,6 +43,7 @@ export default async function createLNURLP(
         max: buyInMax,
         comment_chars: commentChars,
         webhook_url: lnbitsHook,
+        webhook_headers: webhookHeaders,
       }),
     });
 

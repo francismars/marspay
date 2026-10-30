@@ -48,8 +48,8 @@ import {
   handleDashboardLogin,
   handleDashboardLogout,
   isDashboardAuthenticated,
+  isDashboardDebugRawEnabled,
   requireDashboardAuth,
-  verifyLegacyPassword,
 } from './dashboardAuth';
 
 const router = Router();
@@ -301,21 +301,17 @@ router.get('/api/sessions', requireDashboardAuth, (_req, res) => {
   res.json(buildLiveSnapshot());
 });
 
-router.get('/api/debug/raw', requireDashboardAuth, (_req, res) => {
+router.get('/api/debug/raw', (req, res, next) => {
+  if (!isDashboardDebugRawEnabled()) {
+    res.status(404).json({ error: { message: 'Not Found' } });
+    return;
+  }
+  requireDashboardAuth(req, res, next);
+}, (_req, res) => {
   res.json(buildLegacyRawDump());
 });
 
-router.get('/', (req: Request, res: Response) => {
-  if (verifyLegacyPassword(req)) {
-    res.set('Deprecation', 'true');
-    res.set('Link', '</dashboard/api/overview>; rel="successor-version"');
-    res.json(buildOverviewSnapshot());
-    return;
-  }
-  if (req.query.password) {
-    res.status(401).send('Incorrect password. Use POST /dashboard/api/login or open the admin UI.');
-    return;
-  }
+router.get('/', (_req: Request, res: Response) => {
   res.sendFile(path.join(adminDir, 'index.html'), (err) => {
     if (err) {
       res.status(503).send(

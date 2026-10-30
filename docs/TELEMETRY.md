@@ -39,9 +39,7 @@ Sign in with `ADMIN_PASSWORD` from `.env` (httpOnly cookie session; no password 
 | `GET /dashboard/api/p2p` | P2P funnel stats |
 | `GET /dashboard/api/replays` | Replay/spectate stats |
 | `GET /dashboard/api/journey?sessionID=…` or `?pubkey=…` | User timeline (Tier B) |
-| `GET /dashboard/api/debug/raw` | Legacy full in-memory dump (LNURL maps, etc.) |
-
-Legacy: `GET /dashboard?password=…` returns overview JSON with `Deprecation: true` header.
+| `GET /dashboard/api/debug/raw` | Legacy full in-memory dump. Off unless `DASHBOARD_DEBUG_RAW=true`. |
 
 ### Local dev
 

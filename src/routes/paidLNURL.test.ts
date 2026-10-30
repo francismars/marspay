@@ -34,14 +34,14 @@ vi.mock('../telemetry/trackEvent', () => ({
 import { trackEvent } from '../telemetry/trackEvent';
 import paidLNURL from './paidLNURL';
 
-const LNBITS_IP = '203.0.113.5';
+const WEBHOOK_SECRET = 'test-webhook-secret';
 
 const app = express();
 app.use(express.json());
 app.use('/api/LNURL/paid', paidLNURL);
 
 beforeEach(() => {
-  process.env.LNBITS_IP = LNBITS_IP;
+  process.env.LNBITS_WEBHOOK_SECRET = WEBHOOK_SECRET;
   process.env.DEVELOPER_LNADDRESS = 'dev@example.com';
   process.env.DESIGNER_LNADDRESS = 'designer@example.com';
   process.env.HOST_LNADDRESS = 'host@example.com';
@@ -55,11 +55,15 @@ afterEach(() => {
 });
 
 describe('paid LNURL webhook', () => {
-  it('rejects a caller that is not LNbits and leaves the balance unchanged', async () => {
-    const sessionID = 'paid-wrong-ip';
-    seedPayLink(sessionID, 'lnurl-wrong-ip', 500);
+  it('rejects a caller that does not know the webhook secret and leaves the balance unchanged', async () => {
+    const sessionID = 'paid-wrong-secret';
+    seedPayLink(sessionID, 'lnurl-wrong-secret', 500);
 
-    const res = await post('/api/LNURL/paid', { lnurlp: 'lnurl-wrong-ip', amount: 10_000_000 }, '198.51.100.1');
+    const res = await post(
+      '/api/LNURL/paid',
+      { lnurlp: 'lnurl-wrong-secret', amount: 10_000_000, payment_hash: 'hash-wrong-secret' },
+      'wrong-secret'
+    );
 
     expect(res.status).toBe(403);
     expect(res.text).toBe('Access denied');
@@ -67,9 +71,31 @@ describe('paid LNURL webhook', () => {
     expect(payInvoice).not.toHaveBeenCalled();
   });
 
+  it('rejects a webhook when the secret is unset or the header is missing', async () => {
+    const sessionID = 'paid-no-secret';
+    seedPayLink(sessionID, 'lnurl-no-secret', 500);
+    delete process.env.LNBITS_WEBHOOK_SECRET;
+
+    const unset = await post(
+      '/api/LNURL/paid',
+      { lnurlp: 'lnurl-no-secret', amount: 10_000_000, payment_hash: 'hash-no-secret' },
+      WEBHOOK_SECRET
+    );
+    process.env.LNBITS_WEBHOOK_SECRET = WEBHOOK_SECRET;
+    const missingHeader = await post(
+      '/api/LNURL/paid',
+      { lnurlp: 'lnurl-no-secret', amount: 10_000_000, payment_hash: 'hash-no-secret' },
+      ''
+    );
+
+    expect(unset.status).toBe(403);
+    expect(missingHeader.status).toBe(403);
+    expect(getGameInfoFromID(sessionID)?.players.get(PlayerRole.Player1)?.value).toBe(500);
+  });
+
   it('rejects a missing or unknown LNURL', async () => {
-    const missing = await post('/api/LNURL/paid', { amount: 1000 }, LNBITS_IP);
-    const unknown = await post('/api/LNURL/paid', { lnurlp: 'missing-link', amount: 1000 }, LNBITS_IP);
+    const missing = await post('/api/LNURL/paid', { amount: 1000 }, WEBHOOK_SECRET);
+    const unknown = await post('/api/LNURL/paid', { lnurlp: 'missing-link', amount: 1000 }, WEBHOOK_SECRET);
 
     expect(missing.status).toBe(404);
     expect(missing.text).toBe('LNURLp not sent.');
@@ -90,7 +116,7 @@ describe('paid LNURL webhook', () => {
         comment: 'Ada',
         payment_hash: 'hash-credit',
       },
-      LNBITS_IP
+      WEBHOOK_SECRET
     );
 
     expect(res.status).toBe(200);
@@ -118,7 +144,7 @@ describe('paid LNURL webhook', () => {
     const res = await post(
       '/api/LNURL/paid',
       { lnurlp: 'lnurl-dust', amount: 1000, payment_hash: 'hash-dust' },
-      LNBITS_IP
+      WEBHOOK_SECRET
     );
 
     expect(res.status).toBe(200);
@@ -146,7 +172,7 @@ describe('paid LNURL webhook', () => {
     const res = await post(
       '/api/LNURL/paid',
       { lnurlp: 'lnurl-no-list', amount: 10_000_000, payment_hash: 'hash-no-list' },
-      LNBITS_IP
+      WEBHOOK_SECRET
     );
 
     expect(res.status).toBe(404);
@@ -161,7 +187,7 @@ describe('paid LNURL webhook', () => {
     const res = await post(
       '/api/LNURL/paid',
       { lnurlp: 'lnurl-no-hash', amount: 10_000_000 },
-      LNBITS_IP
+      WEBHOOK_SECRET
     );
 
     expect(res.status).toBe(400);
@@ -179,8 +205,8 @@ describe('paid LNURL webhook', () => {
       payment_hash: 'HASH-Replay',
     };
 
-    const first = await post('/api/LNURL/paid', body, LNBITS_IP);
-    const retry = await post('/api/LNURL/paid', { ...body, payment_hash: ' hash-replay ' }, LNBITS_IP);
+    const first = await post('/api/LNURL/paid', body, WEBHOOK_SECRET);
+    const retry = await post('/api/LNURL/paid', { ...body, payment_hash: ' hash-replay ' }, WEBHOOK_SECRET);
 
     expect(first.status).toBe(200);
     expect(retry.status).toBe(200);
@@ -197,7 +223,7 @@ describe('paid LNURL webhook', () => {
     const res = await post(
       '/api/LNURL/paid',
       { lnurlp: 'lnurl-missing-address', amount: 10_000_000, payment_hash: 'hash-missing-address' },
-      LNBITS_IP
+      WEBHOOK_SECRET
     );
 
     expect(res.status).toBe(200);
@@ -251,7 +277,7 @@ async function payNamed(
   const res = await post(
     '/api/LNURL/paid',
     { lnurlp, amount: 3000, comment, payment_hash: `hash-${lnurlp}` },
-    LNBITS_IP
+    WEBHOOK_SECRET
   );
   expect(res.status).toBe(200);
   return getGameInfoFromID(sessionID)?.players.get(PlayerRole.Player1)?.name;
@@ -260,18 +286,17 @@ async function payNamed(
 function post(
   path: string,
   body: unknown,
-  realIp: string
+  secret: string = WEBHOOK_SECRET
 ): Promise<{ status: number; text: string }> {
   return new Promise((resolve, reject) => {
     const server = app.listen(0, '127.0.0.1', () => {
       const address = server.address();
       const port = typeof address === 'object' && address ? address.port : 0;
+      const headers: Record<string, string> = { 'content-type': 'application/json' };
+      if (secret !== '') headers['x-webhook-secret'] = secret;
       fetch(`http://127.0.0.1:${port}${path}`, {
         method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-real-ip': realIp,
-        },
+        headers,
         body: JSON.stringify(body),
       })
         .then(async (res) => {

@@ -32,31 +32,31 @@ import { broadcastOnlineRoomLists } from '../socket/onlineRoom';
 import { io } from '../server';
 import withdrawnLNURL from './withdrawnLNURL';
 
-const LNBITS_IP = '203.0.113.5';
+const WEBHOOK_SECRET = 'test-webhook-secret';
 
 const app = express();
 app.use(express.json());
 app.use('/api/LNURL/withdrawn', withdrawnLNURL);
 
 beforeEach(() => {
-  process.env.LNBITS_IP = LNBITS_IP;
+  process.env.LNBITS_WEBHOOK_SECRET = WEBHOOK_SECRET;
   emit.mockClear();
   vi.mocked(io.to).mockClear();
   vi.mocked(broadcastOnlineRoomLists).mockClear();
 });
 
 describe('withdrawn LNURL webhook', () => {
-  it('rejects a caller that is not LNbits and leaves the game in place', async () => {
-    const sessionID = 'withdraw-wrong-ip';
+  it('rejects a caller that does not know the webhook secret and leaves the game in place', async () => {
+    const sessionID = 'withdraw-wrong-secret';
     seedGame(sessionID, GameMode.P2P);
-    seedWithdraw(sessionID, 'lnurlw-wrong-ip');
+    seedWithdraw(sessionID, 'lnurlw-wrong-secret');
 
-    const res = await post('/api/LNURL/withdrawn', { lnurlw: 'lnurlw-wrong-ip' }, '198.51.100.1');
+    const res = await post('/api/LNURL/withdrawn', { lnurlw: 'lnurlw-wrong-secret' }, 'wrong-secret');
 
     expect(res.status).toBe(403);
     expect(res.text).toBe('Access denied');
     expect(getGameInfoFromID(sessionID)?.mode).toBe(GameMode.P2P);
-    expect(getLNURLWFromID(sessionID)?.id).toBe('lnurlw-wrong-ip');
+    expect(getLNURLWFromID(sessionID)?.id).toBe('lnurlw-wrong-secret');
     expect(emit).not.toHaveBeenCalled();
   });
 
@@ -132,18 +132,17 @@ function seedWithdraw(
 function post(
   path: string,
   body: unknown,
-  realIp: string = LNBITS_IP
+  secret: string = WEBHOOK_SECRET
 ): Promise<{ status: number; text: string }> {
   return new Promise((resolve, reject) => {
     const server = app.listen(0, '127.0.0.1', () => {
       const address = server.address();
       const port = typeof address === 'object' && address ? address.port : 0;
+      const headers: Record<string, string> = { 'content-type': 'application/json' };
+      if (secret !== '') headers['x-webhook-secret'] = secret;
       fetch(`http://127.0.0.1:${port}${path}`, {
         method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-real-ip': realIp,
-        },
+        headers,
         body: JSON.stringify(body),
       })
         .then(async (res) => {

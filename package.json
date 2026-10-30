@@ -3,6 +3,9 @@
   "version": "2.0.0",
   "description": "MarsPay V2 - LNbits Lightning backend for 1v1 games (Socket.IO, LNURL, webhooks).",
   "license": "MIT",
+  "engines": {
+    "node": ">=26"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/francismars/marspayV2.git"
@@ -24,7 +27,7 @@
     "@types/express": "^5.0.6",
     "@types/morgan": "^1.9.10",
     "@types/nanoid-dictionary": "^4.2.3",
-    "@types/node": "^22.20.5",
+    "@types/node": "^26.0.0",
     "@typescript-eslint/eslint-plugin": "^8.72.0",
     "@typescript-eslint/parser": "^8.72.0",
     "eslint": "^10.13.0",

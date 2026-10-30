@@ -3,7 +3,7 @@ import { dateNow } from '../../utils/time';
 import dotenv from 'dotenv';
 
 export default async function deleteLNURLP(lnurl: string) {
-  dotenv.config();
+  dotenv.config({ quiet: true });
   const lnbitsURL = process.env.LNBITS_URL;
   const lnbitsKEY = process.env.LNBITS_KEY;
 

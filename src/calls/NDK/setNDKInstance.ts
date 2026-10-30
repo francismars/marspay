@@ -11,7 +11,7 @@ export async function setNDKInstance() {
   if (ndkInstance) {
     return;
   }
-  dotenv.config();
+  dotenv.config({ quiet: true });
   const nostrPrivKey = process.env.NOSTR_PK;
   if (!nostrPrivKey) {
     throw new Error('NOSTR_PK is missing in environment');

@@ -35,7 +35,7 @@ export async function zapRecipientKind1Note(params: {
   recipientLud16: string;
   comment: string;
 }): Promise<{ ok: true } | { ok: false; reason: string }> {
-  dotenv.config();
+  dotenv.config({ quiet: true });
 
   try {
     getPublicKey(payerSecretKeyBytesFromEnv());

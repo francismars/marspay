@@ -6,7 +6,7 @@ export default async function createLNURLW(
   amount: number,
   maxWithdrawals: number
 ) {
-  dotenv.config();
+  dotenv.config({ quiet: true });
   const lnbitsURL = process.env.LNBITS_URL;
   const lnbitsKEY = process.env.LNBITS_KEY;
   const lnbitsHook = process.env.LNBITS_WITHDRAWHOOK;

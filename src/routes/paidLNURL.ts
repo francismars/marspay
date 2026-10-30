@@ -28,7 +28,7 @@ import { LNURLP } from '../types/lnurlp';
 import { trackEvent } from '../telemetry/trackEvent';
 
 const router = Router();
-dotenv.config();
+dotenv.config({ quiet: true });
 
 interface LNURLPReqBody {
   payment_hash: string;

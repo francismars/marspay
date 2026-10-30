@@ -10,7 +10,7 @@ export default async function createLNURLP(
   /** LNURL-pay comment field length; use `0` for anonymous fixed seats (no PIN in comment). */
   commentChars: number = 10
 ): Promise<LNURLP | null> {
-  dotenv.config();
+  dotenv.config({ quiet: true });
   const lnbitsURL = process.env.LNBITS_URL;
   const lnbitsKEY = process.env.LNBITS_KEY;
   const lnbitsHook = process.env.LNBITS_DEPOSITHOOK;

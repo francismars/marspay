@@ -5,7 +5,7 @@ import registerSocketHandlers from './socket';
 import { app } from './app';
 import { warmEventLog } from './telemetry/eventLog';
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const port = Number(process.env.PORT) || 3001;
 

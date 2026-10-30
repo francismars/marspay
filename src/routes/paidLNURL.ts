@@ -171,6 +171,9 @@ function paySplits(sessionID: string, amount: number, hostLNAddress?: string) {
   ];
   for (const split of feeSplit) {
     const splitedAmount = Math.floor(amount * split.percent);
+    if (splitedAmount <= 0) {
+      continue;
+    }
     console.log(
       `${dateNow()} [${sessionID}] Sending ${
         split.percent

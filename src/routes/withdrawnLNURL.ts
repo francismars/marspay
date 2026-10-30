@@ -50,8 +50,10 @@ router.post('/', (req: Request, res: Response) => {
         LNURLW.claimedCount
       } out of ${LNURLW.maxWithdrawals}.`
     );
-    // Keep tournament session alive until all claims are completed.
-    return;
+    // Keep the session until this claim fills the last withdrawal.
+    if (LNURLW.claimedCount < LNURLW.maxWithdrawals!) {
+      return;
+    }
   }
   const appendToJson =
     (gameInfos.mode === GameMode.TOURNAMENT ||

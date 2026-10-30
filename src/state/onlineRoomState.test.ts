@@ -14,19 +14,30 @@ import {
   completeOnlineClaimPayout,
   confirmOnlineStart,
   createOnlineRoom,
+  failOnlineClaimPayout,
   getOnlineClaimStatus,
   getOnlineForfeitStatus,
   getRoomById,
+  getRoomByKind1EventId,
   joinRoom,
   leaveRoom,
+  markOnlineRematchPending,
+  markOnlineRoomSettledBySession,
+  registerNostrLink,
   resolveOnlineDisconnects,
   runOnlineRoomCleanup,
   seatPaidPlayer,
   serializeRoom,
+  setOnlinePostGameLnurlw,
+  setOnlinePostGameNostrPayout,
+  setOnlineRematchRequested,
+  settleOnlineRematchPayment,
   stepRoomSnapshot,
   takeDueClaimPayouts,
   tryLockOnlinePayout,
+  unlockOnlinePayout,
   updateRoomInput,
+  voteOnlineDoubleOrNothing,
 } from './onlineRoomState';
 
 vi.mock('../telemetry/onlineTelemetry', () => ({
@@ -727,5 +738,228 @@ describe('session cleanup leaves paid seats', () => {
     expect(live.seats.get(PlayerRole.Player1)?.status).toBe('paid');
     expect(live.seats.get(PlayerRole.Player1)?.paidAmount).toBe(1000);
     expect(live.members.has(host)).toBe(false);
+  });
+});
+
+describe('settlement', () => {
+  function finishedMatch(label: string) {
+    const { room, host, guest } = paidMatch(label);
+    room.snapshot.state.gameStarted = true;
+    room.snapshot.state.gameEnded = true;
+    room.snapshot.state.winnerPlayer = 'P1';
+    room.snapshot.state.winnerName = 'Ada';
+    room.snapshot.state.score = [2000, 0];
+    stepRoomSnapshot(room.roomId);
+    return { room: getRoomById(room.roomId)!, host, guest };
+  }
+
+  it('keeps a postgame room until a paid seat settles a chosen withdraw', () => {
+    const { room, host, guest } = finishedMatch('settle-withdraw');
+    markOnlineRoomSettledBySession(host);
+    expect(getRoomById(room.roomId)?.phase).toBe('postgame');
+
+    setOnlinePostGameLnurlw(room.roomId, 'lnurlw-1');
+    const chosen = getRoomById(room.roomId)!;
+    expect(chosen.phase).toBe('finished');
+    expect(chosen.postGame.payoutMethod).toBe('withdraw_qr');
+    expect(chosen.postGame.lnurlw).toBe('lnurlw-1');
+
+    markOnlineRoomSettledBySession('someone-else');
+    expect(getRoomById(room.roomId)?.phase).toBe('finished');
+    markOnlineRoomSettledBySession(guest);
+    expect(getRoomById(room.roomId)).toBeUndefined();
+    markOnlineRoomSettledBySession(host);
+  });
+
+  it('finishes on a nostr payout and drops a pending rematch so a late zap cannot restart it', () => {
+    const { room, guest } = finishedMatch('settle-nostr');
+    setOnlineRematchRequested({
+      roomId: room.roomId,
+      requiredAmount: 1900,
+      rematchEventId: 'evt-rematch',
+      rematchNote1: 'note',
+      waitingForSessionID: guest,
+    });
+    expect(getRoomByKind1EventId('evt-rematch')?.roomId).toBe(room.roomId);
+
+    setOnlinePostGameNostrPayout(room.roomId, 'ada@pay.example');
+    const finished = getRoomById(room.roomId)!;
+    expect(finished.phase).toBe('finished');
+    expect(finished.postGame.payoutMethod).toBe('nostr_zap');
+    expect(finished.postGame.payoutTarget).toBe('ada@pay.example');
+    expect(finished.postGame.rematchRequested).toBe(false);
+    expect(getRoomByKind1EventId('evt-rematch')).toBeUndefined();
+    expect(settleOnlineRematchPayment({
+      roomId: room.roomId,
+      amount: 1900,
+      payerPubkey: 'b'.repeat(64),
+    })).toEqual({ ok: false, reason: 'room_not_finished' });
+    expect(voteOnlineDoubleOrNothing(room.roomId, guest)).toEqual({
+      ok: false,
+      reason: 'room_not_postgame',
+    });
+  });
+
+  it('agrees double-or-nothing only when both seated players vote', () => {
+    const { room, host, guest } = finishedMatch('settle-vote');
+    expect(voteOnlineDoubleOrNothing(room.roomId, 'spectator')).toEqual({
+      ok: false,
+      reason: 'not_player',
+    });
+    expect(voteOnlineDoubleOrNothing(room.roomId, host)).toEqual({
+      ok: true,
+      votes: 1,
+      agreed: false,
+    });
+    expect(voteOnlineDoubleOrNothing(room.roomId, guest)).toEqual({
+      ok: true,
+      votes: 2,
+      agreed: true,
+    });
+    expect(getRoomById(room.roomId)!.phase).toBe('postgame');
+    expect(getRoomById(room.roomId)!.seats.get(PlayerRole.Player1)?.paidAmount).toBe(1000);
+
+    expect(markOnlineRematchPending({
+      roomId: room.roomId,
+      requiredAmount: 1900,
+      waitingForSessionID: guest,
+    })).toBe(true);
+    expect(voteOnlineDoubleOrNothing(room.roomId, host)).toEqual({
+      ok: false,
+      reason: 'rematch_pending',
+    });
+  });
+
+  it('restarts at the required stake when the loser pays, and rejects a short or winner payment', () => {
+    const { room, guest } = finishedMatch('settle-rematch');
+    const winnerPk = 'a'.repeat(64);
+    const loserPk = 'b'.repeat(64);
+    const live = getRoomById(room.roomId)!;
+    live.seats.get(PlayerRole.Player1)!.pubkey = winnerPk;
+    live.seats.get(PlayerRole.Player2)!.pubkey = loserPk;
+
+    expect(settleOnlineRematchPayment({
+      roomId: room.roomId,
+      amount: 1900,
+      payerPubkey: loserPk,
+    })).toEqual({ ok: false, reason: 'rematch_not_requested' });
+
+    setOnlineRematchRequested({
+      roomId: room.roomId,
+      requiredAmount: 1900,
+      rematchEventId: 'evt-pay',
+      rematchNote1: 'note',
+      waitingForSessionID: guest,
+    });
+    expect(settleOnlineRematchPayment({
+      roomId: room.roomId,
+      amount: 1899,
+      payerPubkey: loserPk,
+    })).toEqual({ ok: false, reason: 'amount_too_low' });
+    expect(settleOnlineRematchPayment({
+      roomId: room.roomId,
+      amount: 1900,
+      payerPubkey: winnerPk,
+    })).toEqual({ ok: false, reason: 'winner_cannot_match' });
+    expect(settleOnlineRematchPayment({
+      roomId: room.roomId,
+      amount: 1900,
+      payerPubkey: 'c'.repeat(64),
+    })).toEqual({ ok: false, reason: 'not_loser' });
+    expect(getRoomById(room.roomId)!.phase).toBe('postgame');
+    expect(getRoomById(room.roomId)!.seats.get(PlayerRole.Player2)?.paidAmount).toBe(1000);
+
+    const paid = settleOnlineRematchPayment({
+      roomId: room.roomId,
+      amount: 2000,
+      payerPubkey: loserPk.toUpperCase(),
+    });
+    expect(paid).toMatchObject({ ok: true, requiredAmount: 1900, matchStarted: true });
+    const restarted = getRoomById(room.roomId)!;
+    expect(restarted.phase).toBe('playing');
+    expect(restarted.matchRound).toBe(2);
+    expect(restarted.snapshot.state.score).toEqual([1900, 1900]);
+    expect(restarted.snapshot.state.totalPoints).toBe(3800);
+    expect(restarted.postGame.rematchRequested).toBe(false);
+    expect(restarted.postGame.winnerPoints).toBe(0);
+    expect(restarted.seats.get(PlayerRole.Player1)?.paidAmount).toBe(1900);
+    expect(restarted.seats.get(PlayerRole.Player2)?.paidAmount).toBe(1900);
+    expect(getRoomByKind1EventId('evt-pay')).toBeUndefined();
+    expect(markOnlineRematchPending({ roomId: room.roomId, requiredAmount: 1900 })).toBe(false);
+    expect(settleOnlineRematchPayment({
+      roomId: room.roomId,
+      amount: 1900,
+      payerPubkey: loserPk,
+    })).toEqual({ ok: false, reason: 'room_not_finished' });
+  });
+
+  it('accepts a lightning rematch only from the loser session nostr link', () => {
+    const { room, guest } = finishedMatch('settle-ln');
+    const payer = 'd'.repeat(64);
+    const live = getRoomById(room.roomId)!;
+    live.seats.get(PlayerRole.Player2)!.payMethod = 'lightning';
+    live.seats.get(PlayerRole.Player2)!.pubkey = 'e'.repeat(64);
+    setOnlineRematchRequested({
+      roomId: room.roomId,
+      requiredAmount: 1900,
+      rematchEventId: 'evt-ln',
+      rematchNote1: 'note',
+      waitingForSessionID: guest,
+    });
+
+    expect(settleOnlineRematchPayment({
+      roomId: room.roomId,
+      amount: 1900,
+      payerPubkey: payer,
+    })).toEqual({ ok: false, reason: 'not_loser' });
+    expect(settleOnlineRematchPayment({
+      roomId: room.roomId,
+      amount: 1900,
+      payerPubkey: 'e'.repeat(64),
+    })).toEqual({ ok: false, reason: 'not_loser' });
+
+    expect(registerNostrLink(room.roomId, guest, `${guest}-sock`, payer, {
+      linkPayMethod: 'lightning',
+    })).toMatchObject({ ok: true });
+    const paid = settleOnlineRematchPayment({
+      roomId: room.roomId,
+      amount: 1900,
+      payerPubkey: payer.toUpperCase(),
+    });
+    expect(paid).toMatchObject({ ok: true, requiredAmount: 1900, matchStarted: true });
+    expect(getRoomById(room.roomId)!.seats.get(PlayerRole.Player2)?.paidAmount).toBe(1900);
+  });
+
+  it('queues the claim again after an automatic payout fails, once the retry wait has passed', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const start = new Date('2026-10-29T23:00:00Z');
+    vi.setSystemTime(start);
+    const { room } = finishedMatch('settle-retry');
+    getRoomById(room.roomId)!.seats.get(PlayerRole.Player1)!.lnAddress = 'ada@pay.example';
+    const startedAt = getRoomById(room.roomId)!.postGame.claimStartedAt!;
+
+    resolveOnlineDisconnects(startedAt + ONLINE_CLAIM_PRESENCE_MS);
+    expect(takeDueClaimPayouts()).toEqual([
+      expect.objectContaining({ roomId: room.roomId, lnAddress: 'ada@pay.example', amountSats: 1900 }),
+    ]);
+    vi.setSystemTime(startedAt + ONLINE_CLAIM_PRESENCE_MS);
+    failOnlineClaimPayout(room.roomId);
+    expect(getRoomById(room.roomId)!.postGame.payoutLock).toBeUndefined();
+
+    resolveOnlineDisconnects(startedAt + ONLINE_CLAIM_PRESENCE_MS + 1000);
+    expect(takeDueClaimPayouts()).toEqual([]);
+    resolveOnlineDisconnects(startedAt + ONLINE_CLAIM_PRESENCE_MS + 15_000);
+    expect(takeDueClaimPayouts()).toEqual([
+      expect.objectContaining({ roomId: room.roomId, amountSats: 1900 }),
+    ]);
+  });
+
+  it('lets a failed manual payout be locked again', () => {
+    const { room } = finishedMatch('settle-unlock');
+    expect(tryLockOnlinePayout(room.roomId, 'lnurlw')).toBe(true);
+    expect(tryLockOnlinePayout(room.roomId, 'nostr')).toBe(false);
+    unlockOnlinePayout(room.roomId);
+    expect(tryLockOnlinePayout(room.roomId, 'nostr')).toBe(true);
+    expect(getRoomById(room.roomId)!.phase).toBe('postgame');
   });
 });

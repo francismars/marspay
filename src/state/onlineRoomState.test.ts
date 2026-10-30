@@ -392,6 +392,61 @@ describe('online disconnect forfeit', () => {
     expect(clock?.p2Reason).toBe('idle');
     expect(clock?.p2RemainingMs).toBe(ONLINE_FORFEIT_DISCONNECT_MS - 60 * 1000);
   });
+
+  it('does not treat key-ups or lastAxis packets as steering', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const start = new Date('2026-10-29T21:00:00Z');
+    vi.setSystemTime(start);
+    const { room, host } = paidMatch('idle-keyup');
+    const live = getRoomById(room.roomId)!;
+    live.snapshot.state.gameStarted = true;
+    markSteered(room.roomId, host, start.getTime());
+    markSteered(room.roomId, live.seats.get(PlayerRole.Player2)!.sessionID!, start.getTime());
+
+    for (let elapsed = 500; elapsed <= 30_000; elapsed += 500) {
+      vi.setSystemTime(start.getTime() + elapsed);
+      updateRoomInput(room.roomId, host, { lastAxis: 'up' });
+      updateRoomInput(room.roomId, host, {
+        up: false,
+        down: false,
+        left: false,
+        right: false,
+        lastAxis: 'up',
+      });
+      resolveOnlineDisconnects();
+    }
+
+    const idleSince = seat(room.roomId, PlayerRole.Player1).idleSince;
+    expect(idleSince).toBe(start.getTime() + ONLINE_IDLE_GRACE_MS + 500);
+    expect(getRoomById(room.roomId)!.phase).toBe('playing');
+  });
+
+  it('does not treat a held key as steering, and a new key-down clears idle', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const start = new Date('2026-10-29T21:10:00Z');
+    vi.setSystemTime(start);
+    const { room, host, guest } = paidMatch('idle-held');
+    getRoomById(room.roomId)!.snapshot.state.gameStarted = true;
+    markSteered(room.roomId, guest, start.getTime());
+    updateRoomInput(room.roomId, host, { up: true });
+
+    for (let elapsed = 500; elapsed <= 30_000; elapsed += 500) {
+      vi.setSystemTime(start.getTime() + elapsed);
+      markSteered(room.roomId, guest, start.getTime() + elapsed);
+      updateRoomInput(room.roomId, host, { up: true });
+      resolveOnlineDisconnects();
+    }
+
+    expect(seat(room.roomId, PlayerRole.Player1).idleSince).toBe(
+      start.getTime() + ONLINE_IDLE_GRACE_MS + 500
+    );
+
+    vi.setSystemTime(start.getTime() + 30_000);
+    markSteered(room.roomId, guest, start.getTime() + 30_000);
+    updateRoomInput(room.roomId, host, { intent: 'down' });
+    expect(seat(room.roomId, PlayerRole.Player1).idleSince).toBeUndefined();
+    expect(getOnlineForfeitStatus(getRoomById(room.roomId)!)).toBeUndefined();
+  });
 });
 
 const ROOM_IDLE_AFTER = 20 * 60 * 1000 + 5;

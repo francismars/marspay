@@ -27,6 +27,7 @@ import {
   consumePendingTurn,
   mergeSessionInput,
   type OnlineRoomInputPayload,
+  type OnlineSessionInput,
 } from '../game/onlineInput';
 import {
   appendOnlineMatchArchive,
@@ -1414,6 +1415,18 @@ function playerIdForSession(room: OnlineRoom, sessionID: string): PlayerId | nul
   return null;
 }
 
+/** A key-down, or a direction that just became held. Key-up and lastAxis-only packets do not count. */
+function inputCountsAsSteer(
+  prev: OnlineSessionInput | undefined,
+  payload: OnlineRoomInputPayload
+): boolean {
+  if (payload.intent) {
+    return true;
+  }
+  const axes = ['up', 'down', 'left', 'right'] as const;
+  return axes.some((axis) => payload[axis] === true && !prev?.[axis]);
+}
+
 export function updateRoomInput(roomId: string, sessionID: string, payload: OnlineRoomInputPayload) {
   const room = roomById.get(roomId);
   if (!room) {
@@ -1425,9 +1438,10 @@ export function updateRoomInput(roomId: string, sessionID: string, payload: Onli
   }
 
   const prev = room.inputBySession.get(sessionID);
+  const steered = inputCountsAsSteer(prev, payload);
   const input = mergeSessionInput(prev, payload);
   room.inputBySession.set(sessionID, input);
-  if (payload.intent || payload.lastAxis || payload.up || payload.down || payload.left || payload.right) {
+  if (steered) {
     const now = Date.now();
     for (const [role, seat] of room.seats.entries()) {
       if (seat.sessionID !== sessionID) {

@@ -25,7 +25,7 @@ export interface OnlineSeatState {
   disconnectMs?: number;
   /** Set while this paid seat is connected but has not steered recently. Cleared when they steer. */
   idleSince?: number;
-  /** Last direction or start confirm. Idle opens 15s after this once the sim is running. */
+  /** Last real steer: a key-down, or a direction that was not already held. Idle opens 15s after this once the sim is running. */
   lastSteerAt?: number;
   name?: string;
   picture?: string;

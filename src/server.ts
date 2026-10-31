@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import http from 'http';
+import path from 'path';
 import { Server } from 'socket.io';
 import registerSocketHandlers from './socket';
 import { app } from './app';
@@ -14,7 +15,16 @@ const io = new Server(httpServer);
 
 httpServer.on('error', onError);
 
-void start();
+// Route modules import this file for `io`. Binding here would listen (and
+// process.exit on EADDRINUSE) in any test or tool that loads the app.
+if (isServerEntrypoint(process.argv[1])) {
+  void start();
+}
+
+export function isServerEntrypoint(scriptPath: string | undefined): boolean {
+  const base = path.basename(scriptPath ?? '');
+  return base === 'server.ts' || base === 'server.js';
+}
 
 async function start(): Promise<void> {
   // One tail load before the match loop, so dashboard polls never read the log on the game thread.

@@ -19,7 +19,7 @@ import {
   type ActivityFilters,
   type DashboardAlert,
 } from './lib/api';
-import { usePolling } from './lib/hooks';
+import { noteDashboardAuthorized, setDashboardUnauthorizedHandler, usePolling } from './lib/hooks';
 import { PLAY_MODES, type PlayMode } from './lib/labels';
 import { LoginScreen } from './components/LoginScreen';
 import { NowView } from './components/NowView';
@@ -117,6 +117,11 @@ export default function App() {
   const [explorerKind, setExplorerKind] = useState<'sessionID' | 'pubkey'>(() =>
     new URLSearchParams(window.location.search).get('pubkey') ? 'pubkey' : 'sessionID'
   );
+
+  useEffect(() => {
+    setDashboardUnauthorizedHandler(() => setAuthed(false));
+    return () => setDashboardUnauthorizedHandler(null);
+  }, []);
 
   useEffect(() => {
     void checkAuth().then(setAuthed);
@@ -265,7 +270,14 @@ export default function App() {
   }
 
   if (!authed) {
-    return <LoginScreen onSuccess={() => setAuthed(true)} />;
+    return (
+      <LoginScreen
+        onSuccess={() => {
+          noteDashboardAuthorized();
+          setAuthed(true);
+        }}
+      />
+    );
   }
 
   const showBody =

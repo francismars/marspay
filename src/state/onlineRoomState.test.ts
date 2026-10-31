@@ -762,7 +762,7 @@ describe('settlement', () => {
 
   it('keeps a postgame room until a paid seat settles a chosen withdraw', () => {
     const { room, host, guest } = finishedMatch('settle-withdraw');
-    markOnlineRoomSettledBySession(host);
+    expect(markOnlineRoomSettledBySession(host)).toBe(false);
     expect(getRoomById(room.roomId)?.phase).toBe('postgame');
 
     setOnlinePostGameLnurlw(room.roomId, 'lnurlw-1');
@@ -771,11 +771,11 @@ describe('settlement', () => {
     expect(chosen.postGame.payoutMethod).toBe('withdraw_qr');
     expect(chosen.postGame.lnurlw).toBe('lnurlw-1');
 
-    markOnlineRoomSettledBySession('someone-else');
+    expect(markOnlineRoomSettledBySession('someone-else')).toBe(false);
     expect(getRoomById(room.roomId)?.phase).toBe('finished');
-    markOnlineRoomSettledBySession(guest);
+    expect(markOnlineRoomSettledBySession(guest)).toBe(true);
     expect(getRoomById(room.roomId)).toBeUndefined();
-    markOnlineRoomSettledBySession(host);
+    expect(markOnlineRoomSettledBySession(host)).toBe(false);
   });
 
   it('finishes on a nostr payout and drops a pending rematch so a late zap cannot restart it', () => {

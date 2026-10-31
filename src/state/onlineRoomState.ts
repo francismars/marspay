@@ -1396,20 +1396,22 @@ export function setSeatReady(roomId: string, sessionID: string, ready: boolean) 
   return { ok: true as const, started: false };
 }
 
-export function markOnlineRoomSettledBySession(sessionID: string) {
+/** True when this session closed a finished online room. Those claims have no game-info row. */
+export function markOnlineRoomSettledBySession(sessionID: string): boolean {
   const room = [...roomById.values()].find((candidate) =>
     [...candidate.seats.values()].some(
       (seat) => seat.status === 'paid' && seat.sessionID === sessionID
     )
   );
   if (!room || room.phase !== 'finished') {
-    return;
+    return false;
   }
   room.postGame.settledAt = Date.now();
   noteActivity(room);
   logOnlineState(`postgame settled roomId=${room.roomId} by session=${sessionID}`);
   const roomId = room.roomId;
   deleteRoom(roomId);
+  return true;
 }
 
 function playerIdForSession(room: OnlineRoom, sessionID: string): PlayerId | null {

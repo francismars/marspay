@@ -3,6 +3,25 @@ import { ApiError } from './api';
 
 const RATE_LIMIT_BACKOFF_MS = 60_000;
 
+let onDashboardUnauthorized: (() => void) | null = null;
+let dashboardSessionExpired = false;
+
+/** App registers this so a 401 from polling returns to the login screen and stops every poll. */
+export function setDashboardUnauthorizedHandler(handler: (() => void) | null): void {
+  onDashboardUnauthorized = handler;
+}
+
+/** Call after a successful login so polling can start again. */
+export function noteDashboardAuthorized(): void {
+  dashboardSessionExpired = false;
+}
+
+function expireDashboardSession(): void {
+  if (dashboardSessionExpired) return;
+  dashboardSessionExpired = true;
+  onDashboardUnauthorized?.();
+}
+
 function formatFetchError(e: unknown): string {
   if (e instanceof ApiError) return e.message;
   if (e instanceof Error) return e.message;
@@ -28,7 +47,7 @@ export function usePolling<T>(
   const loadedRef = useRef(false);
 
   const refresh = useCallback(async () => {
-    if (!active) return;
+    if (!active || dashboardSessionExpired) return;
     if (Date.now() < backoffUntilRef.current) return;
 
     if (!loadedRef.current) setLoading(true);
@@ -38,6 +57,10 @@ export function usePolling<T>(
       setData(result);
       loadedRef.current = true;
     } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        expireDashboardSession();
+        return;
+      }
       if (e instanceof ApiError && e.status === 429) {
         backoffUntilRef.current = Date.now() + RATE_LIMIT_BACKOFF_MS;
         setError(

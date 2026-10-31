@@ -16,6 +16,10 @@ vi.mock('../socket/onlineRoom', () => ({
   broadcastOnlineRoomLists: vi.fn(),
 }));
 
+vi.mock('../state/onlineRoomState', () => ({
+  markOnlineRoomSettledBySession: vi.fn(() => false),
+}));
+
 vi.mock('../utils/json', () => ({
   appendGameInfotoJSON: vi.fn(),
 }));
@@ -29,6 +33,9 @@ vi.mock('../calls/LNBits/deleteLNURLP', () => ({
 }));
 
 import { broadcastOnlineRoomLists } from '../socket/onlineRoom';
+import { markOnlineRoomSettledBySession } from '../state/onlineRoomState';
+import { getSocketFromID, setIDToSocket } from '../state/sessionState';
+import { appendGameInfotoJSON } from '../utils/json';
 import { io } from '../io';
 import withdrawnLNURL from './withdrawnLNURL';
 
@@ -43,6 +50,9 @@ beforeEach(() => {
   emit.mockClear();
   vi.mocked(io.to).mockClear();
   vi.mocked(broadcastOnlineRoomLists).mockClear();
+  vi.mocked(markOnlineRoomSettledBySession).mockReset();
+  vi.mocked(markOnlineRoomSettledBySession).mockReturnValue(false);
+  vi.mocked(appendGameInfotoJSON).mockClear();
 });
 
 describe('withdrawn LNURL webhook', () => {
@@ -135,6 +145,49 @@ describe('withdrawn LNURL webhook', () => {
     expect(emit).toHaveBeenCalledTimes(1);
     expect(emit).toHaveBeenCalledWith('prizeWithdrawn');
     expect(broadcastOnlineRoomLists).toHaveBeenCalledOnce();
+  });
+
+  it('clears an online prize claim without logging a missing game', async () => {
+    const sessionID = 'withdraw-online';
+    seedWithdraw(sessionID, 'lnurlw-online');
+    setIDToSocket(sessionID, { socketID: `${sessionID}-sock`, lastSeen: Date.now() });
+    vi.mocked(markOnlineRoomSettledBySession).mockReturnValue(true);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await post('/api/LNURL/withdrawn', {
+      lnurlw: 'lnurlw-online',
+      payment_hash: 'hash-online',
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.text).toBe('{"body":"Withdrawn"}');
+    expect(emit).toHaveBeenCalledWith('prizeWithdrawn');
+    expect(markOnlineRoomSettledBySession).toHaveBeenCalledWith(sessionID);
+    expect(getLNURLWFromID(sessionID)).toBeUndefined();
+    expect(getSocketFromID(sessionID)).toBeUndefined();
+    expect(appendGameInfotoJSON).not.toHaveBeenCalled();
+    expect(errorSpy.mock.calls.some((args) => String(args[0]).includes('Game info not found'))).toBe(
+      false
+    );
+    errorSpy.mockRestore();
+  });
+
+  it('still logs when a non-online claim has no game info', async () => {
+    const sessionID = 'withdraw-missing-game';
+    seedWithdraw(sessionID, 'lnurlw-missing');
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await post('/api/LNURL/withdrawn', {
+      lnurlw: 'lnurlw-missing',
+      payment_hash: 'hash-missing',
+    });
+
+    expect(res.status).toBe(200);
+    expect(getLNURLWFromID(sessionID)?.id).toBe('lnurlw-missing');
+    expect(errorSpy.mock.calls.some((args) => String(args[0]).includes('Game info not found'))).toBe(
+      true
+    );
+    errorSpy.mockRestore();
   });
 
   it('refuses a withdraw that has no payment hash', async () => {

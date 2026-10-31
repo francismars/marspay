@@ -42,9 +42,13 @@ router.post('/', requireLnbitsCaller, (req: Request, res: Response) => {
   }
   console.log(`${dateNow()} [${sessionID}] Claimed LNURLw ${lnurlw}.`);
   io.to(sessionSocketRoomName(sessionID)).emit('prizeWithdrawn');
-  markOnlineRoomSettledBySession(sessionID);
+  const settledOnline = markOnlineRoomSettledBySession(sessionID);
   broadcastOnlineRoomLists();
   res.send({ body: 'Withdrawn' });
+  if (settledOnline) {
+    handleEndOfSession(sessionID, false, false);
+    return;
+  }
   const gameInfos = getGameInfoFromID(sessionID);
   const LNURLW = getLNURLWFromID(sessionID);
   if (!gameInfos) {

@@ -76,7 +76,10 @@ describe('withdrawn LNURL webhook', () => {
     seedGame(sessionID, GameMode.P2P);
     seedWithdraw(sessionID, 'lnurlw-p2p');
 
-    const res = await post('/api/LNURL/withdrawn', { lnurlw: 'lnurlw-p2p' });
+    const res = await post('/api/LNURL/withdrawn', {
+      lnurlw: 'lnurlw-p2p',
+      payment_hash: 'hash-p2p',
+    });
 
     expect(res.status).toBe(200);
     expect(res.text).toBe('{"body":"Withdrawn"}');
@@ -92,18 +95,61 @@ describe('withdrawn LNURL webhook', () => {
     seedGame(sessionID, GameMode.TOURNAMENT);
     seedWithdraw(sessionID, 'lnurlw-tournament', { claimedCount: 0, maxWithdrawals: 2 });
 
-    const first = await post('/api/LNURL/withdrawn', { lnurlw: 'lnurlw-tournament' });
+    const first = await post('/api/LNURL/withdrawn', {
+      lnurlw: 'lnurlw-tournament',
+      payment_hash: 'hash-tournament-1',
+    });
 
     expect(first.status).toBe(200);
     expect(getLNURLWFromID(sessionID)?.claimedCount).toBe(1);
     expect(getGameInfoFromID(sessionID)?.mode).toBe(GameMode.TOURNAMENT);
 
-    const last = await post('/api/LNURL/withdrawn', { lnurlw: 'lnurlw-tournament' });
+    const last = await post('/api/LNURL/withdrawn', {
+      lnurlw: 'lnurlw-tournament',
+      payment_hash: 'hash-tournament-2',
+    });
 
     expect(last.status).toBe(200);
     expect(getGameInfoFromID(sessionID)).toBeUndefined();
     expect(getLNURLWFromID(sessionID)).toBeUndefined();
     expect(emit).toHaveBeenCalledTimes(2);
+  });
+
+  it('counts a withdraw hash once when the webhook is retried', async () => {
+    const sessionID = 'withdraw-replay';
+    seedGame(sessionID, GameMode.TOURNAMENT);
+    seedWithdraw(sessionID, 'lnurlw-replay', { claimedCount: 0, maxWithdrawals: 2 });
+    const body = { lnurlw: 'lnurlw-replay', payment_hash: 'HASH-Replay' };
+
+    const first = await post('/api/LNURL/withdrawn', body);
+    const retry = await post('/api/LNURL/withdrawn', {
+      ...body,
+      payment_hash: ' hash-replay ',
+    });
+
+    expect(first.status).toBe(200);
+    expect(retry.status).toBe(200);
+    expect(retry.text).toBe('{"body":"Withdrawn"}');
+    expect(getLNURLWFromID(sessionID)?.claimedCount).toBe(1);
+    expect(getGameInfoFromID(sessionID)?.mode).toBe(GameMode.TOURNAMENT);
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(emit).toHaveBeenCalledWith('prizeWithdrawn');
+    expect(broadcastOnlineRoomLists).toHaveBeenCalledOnce();
+  });
+
+  it('refuses a withdraw that has no payment hash', async () => {
+    const sessionID = 'withdraw-no-hash';
+    seedGame(sessionID, GameMode.TOURNAMENT);
+    seedWithdraw(sessionID, 'lnurlw-no-hash', { claimedCount: 0, maxWithdrawals: 2 });
+
+    const res = await post('/api/LNURL/withdrawn', { lnurlw: 'lnurlw-no-hash' });
+
+    expect(res.status).toBe(400);
+    expect(res.text).toBe('payment_hash not sent.');
+    expect(getLNURLWFromID(sessionID)?.claimedCount).toBe(0);
+    expect(getGameInfoFromID(sessionID)?.mode).toBe(GameMode.TOURNAMENT);
+    expect(emit).not.toHaveBeenCalled();
+    expect(broadcastOnlineRoomLists).not.toHaveBeenCalled();
   });
 });
 

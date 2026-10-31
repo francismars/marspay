@@ -24,6 +24,7 @@ import payInvoice from '../calls/LNBits/payInvoice';
 import { LNURLP } from '../types/lnurlp';
 import { trackEvent } from '../telemetry/trackEvent';
 import { claimDepositPaymentHash } from '../state/depositPayment';
+import { normalizePaymentHash } from '../utils/paymentHash';
 import { requireLnbitsCaller } from './requireLnbitsCaller';
 
 const router = Router();
@@ -136,13 +137,6 @@ router.post('/', requireLnbitsCaller, async (req: Request, res: Response) => {
   }
   res.status(200).send('OK');
 });
-
-function normalizePaymentHash(paymentHash: unknown): string | null {
-  if (typeof paymentHash !== 'string') return null;
-  const hash = paymentHash.trim().toLowerCase();
-  if (hash === '') return null;
-  return hash;
-}
 
 function normalizePaymentComment(comment: string | string[] | null): string | null {
   if (comment == null) return null;

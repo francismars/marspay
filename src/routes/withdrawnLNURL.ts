@@ -8,6 +8,8 @@ import { getGameInfoFromID } from '../state/gameState';
 import { GameMode } from '../types/game';
 import { broadcastOnlineRoomLists } from '../socket/onlineRoom';
 import { markOnlineRoomSettledBySession } from '../state/onlineRoomState';
+import { claimWithdrawPaymentHash } from '../state/withdrawPayment';
+import { normalizePaymentHash } from '../utils/paymentHash';
 import { requireLnbitsCaller } from './requireLnbitsCaller';
 
 const router = Router();
@@ -23,6 +25,19 @@ router.post('/', requireLnbitsCaller, (req: Request, res: Response) => {
   if (!sessionID) {
     console.error(`${dateNow()} [${sessionID}] Session ID not found.`);
     res.status(404).send('Session ID not found.');
+    return;
+  }
+  const paymentHash = normalizePaymentHash(req.body.payment_hash);
+  if (!paymentHash) {
+    console.error(`${dateNow()} [${sessionID}] payment_hash not sent.`);
+    res.status(400).send('payment_hash not sent.');
+    return;
+  }
+  if (!claimWithdrawPaymentHash(paymentHash)) {
+    console.log(
+      `${dateNow()} [${sessionID}] Duplicate withdraw ${paymentHash} ignored.`
+    );
+    res.send({ body: 'Withdrawn' });
     return;
   }
   console.log(`${dateNow()} [${sessionID}] Claimed LNURLw ${lnurlw}.`);

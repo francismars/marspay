@@ -269,6 +269,23 @@ See **[Game rules (authoritative ONLINE)](#game-rules-authoritative-online)** fo
 
 ---
 
+## Ping
+
+Ping is optional. A seat that never reports still plays a valid match. The HUD badge stays blank until `pingMs` is a number. The value does not change the 100 ms simulation.
+
+**Report it** once the seat is `paid`, about every **2.5 s** (what the web client does):
+
+1. `emit('pingLatency', ack)` and measure `Date.now()` around the ack.
+2. `emit('reportOnlineRoomPing', { roomId, latencyMs })` with that delta.
+
+The server accepts this only from the paid seat whose `sessionID` matches the socket, clamps `latencyMs` to 0–10000, stores `seat.pingMs`, and emits `onlineRoomUpdated`. Spectators and the other player read both seats from that event. A spectator’s report is ignored.
+
+**Steer with your own RTT.** A snapshot is already one-way late when it arrives, and `roomInput` takes about the same time to reach the next tick. Lead time in cells is that delay divided by **100 ms**, plus up to one extra cell if the packet misses the tick boundary. Commit the turn that many cells sooner. Measure `pingLatency` on the bot for this. `seat.pingMs` is the same quantity, refreshed only when someone reports.
+
+**Opponent `pingMs`** is how many ticks they need before a new direction can take effect. Their late turns are already in the snapshots.
+
+---
+
 ## Disconnect behavior
 
 `disconnect` handler calls `leaveRoom(sessionID)` **without** `releaseSeat: true`.
@@ -358,6 +375,7 @@ After **`phase === 'finished'`**, recommended order:
 3. **Room list:** Subscribe to `resListOnlineRooms` if you need global lobby UI (server uses `io.emit` on changes).
 4. **Testing:** Log `reason` on every `onlinePinInvalid`; cross-reference the table above.
 5. **See also:** [Battle-tested notes](#battle-tested-notes) for NWC-oriented flows, ready timing, snapshot shape, and post-game ordering.
+6. **Ping:** Report RTT so the badge shows, and use your own measurement as `roomInput` lead time. See [Ping](#ping).
 
 ---
 

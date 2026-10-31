@@ -79,18 +79,20 @@ export default async function middleware(
 }
 
 function sanitiseID(id: string) {
-  if (!id || id == '' || id.split(':').length !== 2) {
-    console.error(`${dateNow()} [${id}] ID not valid.`);
+  // Missing or empty is a normal first connect; the caller mints a new id.
+  if (!id) return false;
+  if (id.split(':').length !== 2) {
+    console.warn(`${dateNow()} [${id}] ID not valid.`);
     return false;
   }
   const emoji = id.split(':')[0];
   const stringID = id.split(':')[1];
   if (!ALLOWEDEMOJIS.includes(emoji)) {
-    console.error(`${dateNow()} [${id}] Invalid emoji in sessionID.`);
+    console.warn(`${dateNow()} [${id}] Invalid emoji in sessionID.`);
     return false;
   }
   if (stringID.length !== SESSIONIDLENGHT) {
-    console.error(`${dateNow()} [${id}] Invalid sessionID length.`);
+    console.warn(`${dateNow()} [${id}] Invalid sessionID length.`);
     return false;
   }
   return true;

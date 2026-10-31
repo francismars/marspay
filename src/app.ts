@@ -2,12 +2,16 @@ import express, { Request, Response, NextFunction } from 'express';
 import paidLNURL from './routes/paidLNURL';
 import withdrawnLNURL from './routes/withdrawnLNURL';
 import dashboard from './routes/dashboard';
+import health from './routes/health';
 import path from 'path';
 import morgan from 'morgan';
 import { dateNow } from './utils/time';
 import { normalizeIP } from './utils/ip';
 
 export const app = express();
+
+// Before the request logger so uptime polls do not fill the access log.
+app.use('/health', health);
 
 app.use(express.json());
 

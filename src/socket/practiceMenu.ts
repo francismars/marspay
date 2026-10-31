@@ -10,6 +10,7 @@ import { GameMode } from '../types/game';
 import { getGameInfoFromID, serializeGameInfoFromID } from '../state/gameState';
 import { BUYINMAX, BUYINMINPRACTICE } from '../consts/values';
 import createLNURLP from '../calls/LNBits/createLNURLP';
+import { allowSocketAction } from './actionRateLimit';
 
 export async function getPracticeMenuInfos(socket: Socket, LNAddress?: string) {
   const sessionID = socket.data.sessionID;
@@ -27,6 +28,10 @@ export async function getPracticeMenuInfos(socket: Socket, LNAddress?: string) {
       console.log(
         `${dateNow()} [${sessionID}] There is no associated LNRURLP. Creating new one.`
       );
+      if (!allowSocketAction(socket, 'lnurl_create')) {
+        socket.emit('resGetPracticeMenuInfos', { reason: 'rate_limited' });
+        return;
+      }
       await newLNURLPPRACTICE(sessionID, LNAddress);
     } else if (LNURLPs) {
       if (LNURLPs[0].mode !== GameMode.PRACTICE) {

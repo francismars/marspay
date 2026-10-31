@@ -8,6 +8,7 @@ import { appendLNURLPToID, setLNURLPToID } from '../state/lnurlpState';
 import { GameMode } from '../types/game';
 import createLNURLP from '../calls/LNBits/createLNURLP';
 import { getKind1sfromSessionID } from '../state/nostrState';
+import { allowSocketAction } from './actionRateLimit';
 import { getNostrP2PMenuInfos } from './nostrP2PMenu';
 
 export async function getP2PMenuInfos(socket: Socket, hostLNAddress?: string ) {
@@ -32,7 +33,11 @@ export async function getP2PMenuInfos(socket: Socket, hostLNAddress?: string ) {
       console.log(
         `${dateNow()} [${sessionID}] There are no associated LNRURLPs. Creating new ones.`
       );
-    await newLNURLPsP2P(sessionID, hostLNAddress);
+      if (!allowSocketAction(socket, 'lnurl_create')) {
+        socket.emit('resGetGameMenuInfos', { reason: 'rate_limited' });
+        return;
+      }
+      await newLNURLPsP2P(sessionID, hostLNAddress);
     } else if (LNURLPs) {
       if (LNURLPs[0].mode !== GameMode.P2P) {
         console.log(

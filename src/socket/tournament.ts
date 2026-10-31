@@ -9,6 +9,7 @@ import {
 import { GameInfo, GameMode, PlayerInfoFromRole } from '../types/game';
 import { serializeGameInfoFromID, setGameInfoByID } from '../state/gameState';
 import createLNURLP from '../calls/LNBits/createLNURLP';
+import { allowSocketAction } from './actionRateLimit';
 
 export async function getTournamentMenuInfos(
   socket: Socket,
@@ -58,6 +59,10 @@ export async function getTournamentMenuInfos(
     console.log(
       `${dateNow()} [${sessionID}] There is no associated LNRURLP. Creating new one.`
     );
+    if (!allowSocketAction(socket, 'lnurl_create')) {
+      socket.emit('resGetTournamentInfos', { reason: 'rate_limited' });
+      return;
+    }
     try {
       if(data.hostLNAddress) await newLNURLPTournament(sessionID, data.buyin, data.hostLNAddress);
       else await newLNURLPTournament(sessionID, data.buyin);

@@ -54,7 +54,7 @@ function hashIp(ip: string, day: string): string {
     .slice(0, 16);
 }
 
-function resolveClientIp(socket: Socket): string {
+export function resolveClientIp(socket: Socket): string {
   const header = socket.handshake.headers['x-real-ip'];
   const raw =
     typeof header === 'string' && header.trim()

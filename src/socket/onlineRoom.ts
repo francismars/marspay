@@ -49,6 +49,7 @@ import {
   getAppNostrSession,
 } from '../state/nostrAppSessionState';
 import { dateNow } from '../utils/time';
+import { allowSocketAction } from './actionRateLimit';
 import { maybeTrackOnlinePing, trackOnlineOk, trackOnlineReject } from '../telemetry/onlineTelemetry';
 import { resolveTrackPubkeyPrefix } from '../telemetry/resolveTrackPubkeyPrefix';
 import { trackEvent } from '../telemetry/trackEvent';
@@ -276,6 +277,11 @@ export async function createOnlineRoomHandler(
 ) {
   const sessionID = socket.data.sessionID as string | undefined;
   if (!sessionID) {
+    return;
+  }
+  if (!allowSocketAction(socket, 'room_create')) {
+    trackOnlineReject('online.room.created', 'rate_limited', { sessionID });
+    socket.emit('onlinePinInvalid', { reason: 'rate_limited' });
     return;
   }
   logOnline(sessionID, `createOnlineRoom requested (buyin=${payload?.buyin ?? 'default'})`);
@@ -1343,6 +1349,10 @@ export function requestOnlineSeatZapPayPrepareHandler(socket: Socket, payload: {
     kind1EventId = room.kind1EventId;
     buyinSats = room.buyin;
   }
+  if (!allowSocketAction(socket, 'seat_invoice')) {
+    socket.emit('resOnlineSeatZapPayError', { reason: 'rate_limited' });
+    return;
+  }
   void (async () => {
     try {
       const ctx = await resolveOnlineSeatZapContext(kind1EventId!, buyinSats);
@@ -1423,6 +1433,10 @@ export function confirmOnlineSeatZapPayHandler(
   const buyinSats = rematchLoser ? (room.postGame.rematchRequiredAmount ?? 0) : room.buyin;
   if (!kind1EventId || buyinSats <= 0) {
     socket.emit('resOnlineSeatZapPayError', { reason: rematchLoser ? 'rematch_not_ready' : 'kind1_not_ready' });
+    return;
+  }
+  if (!allowSocketAction(socket, 'seat_invoice')) {
+    socket.emit('resOnlineSeatZapPayError', { reason: 'rate_limited' });
     return;
   }
   void (async () => {
@@ -1528,6 +1542,10 @@ export async function requestOnlineSeatLightningHandler(
   const kind1EventId = purpose === 'rematch' ? room.postGame.rematchEventId : room.kind1EventId;
   if (!kind1EventId) {
     rejectSeatLightning(purpose === 'rematch' ? 'rematch_not_ready' : 'kind1_not_ready');
+    return;
+  }
+  if (!allowSocketAction(socket, 'seat_invoice')) {
+    rejectSeatLightning('rate_limited');
     return;
   }
   removeLightningNostrLinksForSession(room.roomId, sessionID);

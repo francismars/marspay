@@ -10,7 +10,6 @@ import { nolookalikes } from 'nanoid-dictionary';
 import { dateNow } from '../utils/time';
 import { SESSIONIDLENGHT } from '../consts/values';
 import { Session } from '../types/session';
-import { normalizeIP } from '../utils/ip';
 import { trackEvent } from '../telemetry/trackEvent';
 import { recordSessionConnect } from '../telemetry/trafficAnalytics';
 

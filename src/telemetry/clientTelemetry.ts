@@ -1,5 +1,4 @@
 import type { Socket } from 'socket.io';
-import { getAppNostrSession } from '../state/nostrAppSessionState';
 import { trackEvent } from './trackEvent';
 import { resolveTrackPubkeyPrefix } from './resolveTrackPubkeyPrefix';
 

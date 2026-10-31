@@ -6,21 +6,18 @@ import {
   setRoomPhase,
 } from '../state/onlineRoomState';
 
-function get(path: string): Promise<{ status: number; body: string; cacheControl: string | null }> {
+function request(
+  path: string,
+  init?: RequestInit
+): Promise<{ status: number; body: string; headers: Headers }> {
   return new Promise((resolve, reject) => {
     const server = app.listen(0, '127.0.0.1', () => {
       const address = server.address();
       const port = typeof address === 'object' && address ? address.port : 0;
-      fetch(`http://127.0.0.1:${port}${path}`)
+      fetch(`http://127.0.0.1:${port}${path}`, init)
         .then(async (res) => {
           const body = await res.text();
-          server.close(() =>
-            resolve({
-              status: res.status,
-              body,
-              cacheControl: res.headers.get('cache-control'),
-            })
-          );
+          server.close(() => resolve({ status: res.status, body, headers: res.headers }));
         })
         .catch((error: unknown) => {
           server.close(() => reject(error));
@@ -32,7 +29,7 @@ function get(path: string): Promise<{ status: number; body: string; cacheControl
 
 describe('GET /health', () => {
   it('returns process uptime and live room counts', async () => {
-    const before = JSON.parse((await get('/health')).body) as {
+    const before = JSON.parse((await request('/health')).body) as {
       liveRooms: number;
       livePaidRooms: number;
     };
@@ -77,9 +74,13 @@ describe('GET /health', () => {
     });
     setRoomPhase(cancelled.roomId, 'cancelled');
 
-    const res = await get('/health');
+    const res = await request('/health');
     expect(res.status).toBe(200);
-    expect(res.cacheControl).toBe('no-store');
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(res.headers.get('x-powered-by')).toBeNull();
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(res.headers.get('x-frame-options')).toBe('SAMEORIGIN');
+    expect(res.headers.get('referrer-policy')).toBe('no-referrer');
     const body = JSON.parse(res.body) as {
       ok: boolean;
       uptimeSec: number;
@@ -100,5 +101,14 @@ describe('GET /health', () => {
       'ok',
       'uptimeSec',
     ]);
+  });
+
+  it('rejects JSON bodies over 32kb', async () => {
+    const res = await request('/api/LNURL/paid', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ blob: 'a'.repeat(40_000) }),
+    });
+    expect(res.status).toBe(413);
   });
 });

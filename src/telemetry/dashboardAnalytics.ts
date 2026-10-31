@@ -474,7 +474,6 @@ export function buildHomeSnapshot(window: AnalyticsWindow = '24h') {
 export function buildModeFunnelSnapshot(mode: FunnelMode, window: AnalyticsWindow = '24h') {
   const defs = FUNNEL_BY_MODE[mode];
   const funnel = buildStepConversionFunnel(defs, mode, window);
-  const hours = windowHours(window);
   const events = eventsInWindow(window);
 
   const rejectTables: Record<string, Array<{ reason: string; count: number }>> = {};

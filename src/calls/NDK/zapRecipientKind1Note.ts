@@ -10,7 +10,7 @@ import {
   lud16ToLnurlPayUrl,
   waitForKind1OnRelays,
 } from '../nostr/lnurlZapShared';
-import { NOSTR_RELAYS, ZAP_RECEIPT_RELAYS } from '../../consts/nostrRelays';
+import { ZAP_RECEIPT_RELAYS } from '../../consts/nostrRelays';
 import { dateNow } from '../../utils/time';
 
 function payerSecretKeyBytesFromEnv(): Uint8Array {

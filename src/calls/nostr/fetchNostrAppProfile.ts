@@ -1,4 +1,3 @@
-import { SimplePool } from 'nostr-tools';
 import type { AuthorRelayContext } from './fetchAuthorEvents';
 import { fetchLatestAuthorEvent } from './fetchAuthorEvents';
 import type { AppNostrProfile } from '../../state/nostrAppSessionState';

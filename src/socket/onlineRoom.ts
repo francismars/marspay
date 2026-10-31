@@ -35,7 +35,7 @@ import { P2PMAXWITHDRAWALS } from '../consts/values';
 import { onlineRoomPublicUrl } from '../consts/gamePublicUrl';
 import { GameMode, PlayerRole } from '../types/game';
 import type { OnlineRoomListItem } from '../types/online';
-import { io } from '../server';
+import { io } from '../io';
 import { setIDToLNURLW, setLNURLWToID } from '../state/lnurlwState';
 import {
   archivedRowToOnlineRoomListItem,

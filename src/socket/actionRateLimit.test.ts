@@ -17,7 +17,7 @@ const { createLNURLPMock } = vi.hoisted(() => {
   };
 });
 
-vi.mock('../server', () => ({
+vi.mock('../io', () => ({
   io: {
     to: vi.fn(() => ({ emit: vi.fn() })),
     emit: vi.fn(),

@@ -15,7 +15,7 @@ import {
   PlayerInfo,
   PlayerRole,
 } from '../types/game';
-import { io } from '../server';
+import { io } from '../io';
 import dotenv from 'dotenv';
 import { DESIGNERPERCENT, DEVPERCENT, HOSTPERCENT } from '../consts/splits';
 import getLNURLCallback from '../calls/LNAddress/getLNURLCallback';

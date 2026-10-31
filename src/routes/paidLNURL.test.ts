@@ -8,7 +8,7 @@ const payInvoice = vi.fn(async () => ({}));
 const getLNURLCallback = vi.fn(async () => 'https://cb.example/callback');
 const getInvoiceFromCallback = vi.fn(async (_callback: string, sats: number) => `invoice-${sats}`);
 
-vi.mock('../server', () => ({
+vi.mock('../io', () => ({
   io: {
     to: vi.fn(() => ({ emit: vi.fn() })),
     sockets: { adapter: { rooms: new Map() } },

@@ -1,9 +1,8 @@
 import dotenv from 'dotenv';
 import http from 'http';
-import path from 'path';
-import { Server } from 'socket.io';
 import registerSocketHandlers from './socket';
 import { app } from './app';
+import { io } from './io';
 import { warmEventLog } from './telemetry/eventLog';
 
 dotenv.config({ quiet: true });
@@ -11,20 +10,13 @@ dotenv.config({ quiet: true });
 const port = Number(process.env.PORT) || 3001;
 
 const httpServer = http.createServer(app);
-const io = new Server(httpServer);
+io.attach(httpServer);
 
 httpServer.on('error', onError);
 
-// Route modules import this file for `io`. Binding here would listen (and
-// process.exit on EADDRINUSE) in any test or tool that loads the app.
-if (isServerEntrypoint(process.argv[1])) {
-  void start();
-}
-
-export function isServerEntrypoint(scriptPath: string | undefined): boolean {
-  const base = path.basename(scriptPath ?? '');
-  return base === 'server.ts' || base === 'server.js';
-}
+// Process entry for pm2 and `npm start`. Loading this file binds the port,
+// so nothing else under src may import it.
+void start();
 
 async function start(): Promise<void> {
   // One tail load before the match loop, so dashboard polls never read the log on the game thread.
@@ -55,5 +47,3 @@ function onError(error: NodeJS.ErrnoException): void {
       throw error;
   }
 }
-
-export { io };

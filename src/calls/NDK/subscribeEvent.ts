@@ -11,7 +11,7 @@ import {
 import { BUYINMIN, ONLINE_BUYIN_MIN } from '../../consts/values';
 import { ZAP_RECEIPT_RELAYS } from '../../consts/nostrRelays';
 import { fetchZapReceiptsForKind1 } from '../nostr/fetchZapReceiptsForKind1';
-import { io } from '../../server';
+import { io } from '../../io';
 import {
   GameInfo,
   GameMode,

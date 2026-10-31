@@ -6,7 +6,7 @@ import { getLNURLWFromID, setIDToLNURLW, setLNURLWToID } from '../state/lnurlwSt
 
 const emit = vi.fn();
 
-vi.mock('../server', () => ({
+vi.mock('../io', () => ({
   io: {
     to: vi.fn(() => ({ emit })),
   },
@@ -29,7 +29,7 @@ vi.mock('../calls/LNBits/deleteLNURLP', () => ({
 }));
 
 import { broadcastOnlineRoomLists } from '../socket/onlineRoom';
-import { io } from '../server';
+import { io } from '../io';
 import withdrawnLNURL from './withdrawnLNURL';
 
 const WEBHOOK_SECRET = 'test-webhook-secret';

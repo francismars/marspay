@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { getIDFromLNURLW, getLNURLWFromID } from '../state/lnurlwState';
 import { sessionSocketRoomName } from '../state/sessionState';
 import { dateNow } from '../utils/time';
-import { io } from '../server';
+import { io } from '../io';
 import { handleEndOfSession } from '../state/cleanupState';
 import { getGameInfoFromID } from '../state/gameState';
 import { GameMode } from '../types/game';
